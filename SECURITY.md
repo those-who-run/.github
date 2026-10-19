@@ -1,0 +1,13 @@
+# Security policy
+
+Those Who Run is a hobby project run by one person. It runs on the operator's own network: the engineer, the pit wall and the data volume are meant for a home LAN, not the internet.
+
+## Reporting a vulnerability
+
+Please report it privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability**. Don't open a public issue for it.
+
+Say what you found, how to reproduce it, and what an attacker could do with it. You'll get a reply within a week. There is no bug bounty.
+
+## Supported versions
+
+Only the latest release gets fixes.
