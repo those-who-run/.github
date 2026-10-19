@@ -4,6 +4,8 @@ Closes #
 
 ## What changes
 
+AI assistance: none / <!-- the tool, and what it did -->
+
 ## How it was checked
 
 - [ ] `make check` is green
