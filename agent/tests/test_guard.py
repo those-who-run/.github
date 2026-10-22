@@ -618,7 +618,6 @@ class Settings(unittest.TestCase):
         # Claude Code consults only Read and Edit rules for paths (a Write rule warns).
         self.assertEqual([r for r in rules if r.startswith("Write(")], [])
 
-    @unittest.skipUnless(shutil.which("git"), "needs git")
     def test_the_readme_gitignore_tracks_the_settings_and_the_guard_but_not_the_worktrees(self):
         """v1 checked its own .gitignore; here the lines README.md tells a repository
         to add are checked instead."""
@@ -727,6 +726,34 @@ class EmptyConfig(GuardTest):
         self.assertEqual(guard.load_config(str(EXAMPLE)), guard.Config())
 
 
+class BranchValue(GuardTest):
+    """The branch as a repository may write it: padded with spaces, or in another case."""
+
+    def test_spaces_around_the_branch_are_stripped(self):
+        self.write_config({"branch": " main "})
+        self.assertEqual(guard.load_config(str(self.config_path)).branch, "main")
+        self.assertEqual(self.decision("git push origin main"), "block")
+
+    def test_the_branch_is_matched_without_regard_to_case(self):
+        self.write_config({"branch": "Main"})
+        self.assert_decisions(
+            "block",
+            [
+                "git push origin main",
+                "git push origin Main",
+                "git push origin HEAD:refs/heads/MAIN",
+            ],
+        )
+        self.assertEqual(self.decision("git push origin feat/main-notes"), "allow")
+
+
+class ConfigEncoding(GuardTest):
+    def test_a_byte_order_mark_is_read(self):
+        self.config_path.write_text('\ufeff{"branch": "trunk"}', encoding="utf-8")
+        self.assertEqual(self.decision("git push origin trunk"), "block")
+        self.assertEqual(self.decision("git push origin main"), "allow")
+
+
 # Every command in the tables above that names a guarded program.
 SENSITIVE_COMMANDS = sorted(
     {
@@ -758,11 +785,12 @@ class MissingConfig(GuardTest):
     def test_every_sensitive_command_is_blocked(self):
         self.assert_closed()
 
-    def test_other_commands_are_still_checked(self):
-        self.assertEqual(self.decision("cat .env"), "block")
-        self.assertEqual(self.decision("rm -rf .git/hooks"), "block")
-        self.assertEqual(self.decision("ls -la"), "allow")
-        self.assertEqual(self.decision("make check"), "allow")
+    def test_every_other_command_is_blocked_too(self):
+        # Quoting hides git from a text match (gi""t), so the guard doesn't rely on one.
+        for command in ['gi""t push origin trunk', "cat .env", "ls -la", "make check"]:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), "block")
+                self.assertIn("fix it with the Edit tool", self.reason(command))
 
     def test_the_block_is_logged(self):
         self.decision("git status")
@@ -780,13 +808,27 @@ class MissingConfig(GuardTest):
             '{"release_tags": ["v"]}',
             '{"release_tags": ["*v"]}',
             '{"release_tags": ["v*-*"]}',
+            '{"release_tags": ["*"]}',
+            '{"release_tags": [" *"]}',
+            '{"release_tags": ["v *"]}',
             '{"release_tag": ["v*"]}',
+            '{"branch": "   "}',
+            '{"branch": "refs/heads/main"}',
+            '{"branch": "ma in"}',
+            '{"branch": "main~1"}',
+            '{"branch": "main", "branch": "dev"}',
+            '{"owner": "those-who-run", "release_tags": ["v*"], "owner": "x"}',
         ]
         for text in bad:
             with self.subTest(config=text):
                 self.write_config(text)
                 self.assertEqual(self.decision("git status"), "block")
-                self.assertEqual(self.decision("ls"), "allow")
+                self.assertEqual(self.decision("ls"), "block")
+                self.assertIn("guard.json", self.reason("ls"))
+
+    def test_a_repeated_key_is_named(self):
+        self.write_config('{"branch": "main", "branch": "dev"}')
+        self.assertIn("'branch' is given more than once", self.reason("git push origin main"))
 
     def test_a_directory_in_place_of_the_config_blocks(self):
         self.config_path.mkdir()

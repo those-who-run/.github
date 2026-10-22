@@ -21,10 +21,10 @@ documents fed to a shell, `env`/`VAR=` prefixes and wrappers such as `sudo` or
   * nothing: Claude Code's own permission rules decide.
 
 It fails closed: if the guard itself errors, the command is blocked, and if
-`.claude/guard.json` is missing or can't be read, every command that names one of the
-guarded programs is blocked until it is fixed. A command it
-can't parse that names one of the guarded programs, and a command whose program is a
-variable (`$g ...`) or an alias set in the same command, are sent to `ask`.
+`.claude/guard.json` is missing or can't be read, every Bash command is blocked until
+it is fixed with the Edit tool. A command it can't parse that names one of the guarded
+programs, and a command whose program is a variable (`$g ...`) or an alias set in the
+same command, are sent to `ask`.
 
 It is a guard against mistakes, not a sandbox. It can't see into a script file, a
 program that runs git itself (`python3 -c 'subprocess.run(...)'`), a file it opens
@@ -120,16 +120,37 @@ CONFIG_PATH = os.path.normpath(
 )
 
 # The rules read the configuration from here rather than as an argument, so that every
-# rule keeps the one signature the tables below rely on. main() sets it for each run.
+# rule keeps the one signature the tables below rely on. decide() sets it for each run.
 CONFIG = Config()
+
+
+# A branch name as the config may give it: short, as `git push origin <branch>` names
+# it. Anything else (a space, a `refs/` prefix) would never equal the ref being pushed,
+# and so would quietly protect nothing.
+BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+# A release tag pattern: a non-empty prefix and one trailing *. A bare `*` would leave
+# `v1.0.0` unprotected while covering only tags that start with a digit.
+TAG_PATTERN = re.compile(r"[A-Za-z0-9._/-]+\*")
+
+
+def unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """A JSON object that names each key once. json's default keeps the last of a repeated
+    key, so a diff could show one value while a later line overrides it unseen."""
+    out: dict[str, object] = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"the key {k!r} is given more than once")
+        out[k] = v
+    return out
 
 
 def load_config(path: str) -> Config:
     """The configuration in `path`. Keys it leaves out take v1's values; an unknown key
     is an error, because a misspelt one would otherwise fall back to a default unseen."""
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        # utf-8-sig: an editor that writes a byte order mark shouldn't block every command.
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f, object_pairs_hook=unique_keys)
     except (OSError, ValueError) as e:
         raise ConfigError(f"{path} can't be read ({e})") from e
     if not isinstance(data, dict):
@@ -140,18 +161,24 @@ def load_config(path: str) -> Config:
     for key in ("branch", "release_workflow", "owner"):
         if key in data and (not isinstance(data[key], str) or not data[key].strip()):
             raise ConfigError(f"{path}: {key} must be a non-empty string")
+    branch = data.get("branch", Config.branch).strip()
+    if branch.startswith("refs/") or not BRANCH.fullmatch(branch):
+        raise ConfigError(
+            f"{path}: branch must be a short branch name such as \"main\", "
+            "with no refs/ prefix, spaces or other characters outside A-Z a-z 0-9 . _ / -"
+        )
     tags = data.get("release_tags", list(Config.release_tags))
     if (
         not isinstance(tags, list)
         or not tags
-        or not all(isinstance(t, str) and t.count("*") == 1 and t.endswith("*") for t in tags)
+        or not all(isinstance(t, str) and TAG_PATTERN.fullmatch(t) for t in tags)
     ):
         raise ConfigError(
-            f"{path}: release_tags must be a non-empty list of patterns that end in one *, "
-            'such as "v*" or "gen/go/v*"'
+            f"{path}: release_tags must be a non-empty list of patterns, each a prefix "
+            'followed by one *, such as "v*" or "gen/go/v*"'
         )
     return Config(
-        branch=data.get("branch", Config.branch),
+        branch=branch,
         release_tags=tuple(tags),
         release_workflow=data.get("release_workflow", Config.release_workflow),
         owner=data.get("owner", Config.owner),
@@ -337,7 +364,10 @@ PUSH_DANGEROUS_SHORT = {
 
 
 def is_protected_branch(ref: str) -> bool:
-    return ref in (CONFIG.branch, f"refs/heads/{CONFIG.branch}")
+    # Without regard to case: a config that says "Main" almost certainly means main, and
+    # blocking a push to a branch that differs from it only in case costs little.
+    ref, branch = ref.lower(), CONFIG.branch.lower()
+    return ref in (branch, f"refs/heads/{branch}")
 
 
 def git_push_rule(args: list[str], env: dict[str, str]) -> Verdict:
@@ -385,7 +415,8 @@ TAG_READS = {"--list", "--delete", "--verify", "--contains", "--points-at", "--m
 
 
 def git_tag_rule(args: list[str], env: dict[str, str]) -> Verdict:
-    """Creating a v* tag. Listing, verifying and deleting local tags are fine."""
+    """Creating a release tag (`release_tags`). Listing, verifying and deleting local tags
+    are fine."""
     positionals, reading, i = [], False, 0
     while i < len(args):
         a = args[i]
@@ -1374,21 +1405,20 @@ def log(decision: str, rule: str, command: str) -> None:
 
 def decide(command: str, config_path: str) -> Verdict:
     """The verdict on a command under the repository's configuration. Without a
-    readable one the guard can't tell which branch or tags to protect, so a command
-    that names a guarded program is blocked; anything else is still checked against
-    v1's values, which keeps the secret rules working meanwhile."""
+    readable one the guard can't tell which branch or tags to protect, so every command
+    is blocked. Blocking only the commands that name a guarded program would trust the
+    raw text, which quoting (`gi""t`) hides from; and nothing needs Bash to fix the
+    config, since the Read and Edit tools reach it."""
     global CONFIG
     try:
         CONFIG = load_config(config_path)
     except ConfigError as e:
-        CONFIG = Config()
-        m = SENSITIVE.search(command)
-        if m is not None:
-            return block(
-                "config",
-                f"{e}, so commands that run {m.group(1)} are blocked until "
-                ".claude/guard.json is fixed (agent/README.md in those-who-run/.github)",
-            )
+        return block(
+            "config",
+            f"{e}, so every Bash command is blocked until .claude/guard.json is fixed; "
+            "fix it with the Edit tool (agent/README.md in those-who-run/.github says what "
+            "it holds)",
+        )
     return check(command)
 
 

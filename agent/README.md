@@ -18,18 +18,22 @@ policy.
 ## What the guard does
 
 - **Blocks** (the agent is told why and to ask the maintainer): skipping the commit
-  hooks, pushing to the protected branch, force-pushing, pushing or creating a release
-  tag, `gh pr merge --admin`, creating or changing releases, running or switching
+  hooks (including `pre-commit uninstall`), pushing to the protected branch,
+  force-pushing, deleting remote branches or tags (`--delete`, `--prune`, a `:ref`
+  refspec), pushing any tag by name or with `--tags`, creating a release tag,
+  `gh pr merge --admin`, creating or changing releases, running or switching
   workflows, changing the repository's settings, secrets, variables and rulesets,
-  writes to a cluster or a registry, and reading a secret from Bash.
+  printing the `gh` token or changing its login (`token`, `login`, `logout` and
+  `refresh` under `gh auth`), writes to a cluster or a registry, and reading a secret
+  from Bash. The docstring in `guard.py` has the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
   including any `gh pr merge`), re-running a workflow run, acting on a repository
   outside the organisation, and any command it can't follow that names `git`, `gh`,
   `kubectl`, `oc`, `helm`, `docker`, `podman` or `pre-commit`.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
-  read, the command is blocked. Without a config, every command that names one of the
-  programs above is blocked, and other commands are still checked against the
-  defaults.
+  read, the command is blocked. Without a readable config every Bash command is
+  blocked, with the reason, until the file is fixed; the Read and Edit tools still
+  reach it, so nothing needs Bash to fix it.
 
 Blocks and asks are logged, with tokens and passwords redacted, to
 `~/.claude/twr-guard.log`. `TWR_GUARD_LOG` moves the log; set it empty to turn it off.
@@ -47,13 +51,13 @@ Blocks and asks are logged, with tokens and passwords redacted, to
    ```
 
 2. Edit `.claude/guard.json`. Every key is optional and defaults to the value shown in
-   `guard.example.json`; an unknown key makes the config unreadable, so a misspelt key
-   blocks rather than being ignored.
+   `guard.example.json`; an unknown key, or a key given twice, makes the config
+   unreadable, so a misspelt or repeated key blocks rather than being ignored.
 
    | Key | Default | Meaning |
    | --- | --- | --- |
-   | `branch` | `"main"` | The branch that takes changes only through a pull request. |
-   | `release_tags` | `["v*"]` | The tags a release starts from. Each pattern ends in one `*`, which stands for a version and so must start with a digit: `v*` covers `v1.2.0` but not `very-old`. List every pattern the repository releases under, such as `["v*", "gen/go/v*"]`. |
+   | `branch` | `"main"` | The branch that takes changes only through a pull request, by its short name (`main`, not `refs/heads/main`), made of `A-Z a-z 0-9 . _ / -`. Pushes are matched without regard to case. |
+   | `release_tags` | `["v*"]` | The tags a release starts from. Each pattern is a prefix followed by one `*`, which stands for a version and so must start with a digit: `v*` covers `v1.2.0` but not `very-old`. List every pattern the repository releases under, such as `["v*", "gen/go/v*"]`. |
    | `release_workflow` | `"release.yml"` | The workflow that publishes a release, named in the reasons the guard gives. |
    | `owner` | `"those-who-run"` | The organisation. `gh` commands on a repository outside it ask first. |
 
