@@ -402,11 +402,53 @@ jobs:
       smoke: docker run --rm "$IMAGE" --version
 ```
 
-On a release tag, the same call with `push: true`. The calling repository needs a
-`release` environment (the maintainer as required reviewer, deployments limited to
-`v*` tags). A tag created with a workflow's `GITHUB_TOKEN` starts no workflow, so a
-release workflow that tags with that token calls this one directly rather than
-waiting for the tag's push event.
+On a release, the same call with `push: true`, from a run on the tag. A called
+workflow sees its caller's ref, so the run that calls this one is started on the
+tag: once release-please has tagged, its workflow dispatches the repository's
+release workflow with `--ref vX.Y.Z`. A `workflow_dispatch` made with the
+`GITHUB_TOKEN` starts a run; it needs `actions: write`. In the release-please
+workflow, after the release-please job:
+
+```yaml
+  release:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Start the release workflow on the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+```
+
+The release workflow, `release.yml`, then runs on `refs/tags/vX.Y.Z` and calls this
+one:
+
+```yaml
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: those-who-run/.github/.github/workflows/image.yml@<sha> # vX.Y.Z
+    with:
+      smoke: docker run --rm "$IMAGE" --version
+      push: true
+```
+
+Dispatched on anything but a `vX.Y.Z` tag, `build` fails before building. The
+calling repository needs a `release` environment (the maintainer as required
+reviewer, deployments limited to `v*` tags).
 
 ### Images
 
@@ -420,11 +462,13 @@ once, after its first push.
 ### Verifying an image
 
 A reusable workflow signs its attestations as itself, not as the calling
-workflow, so name it as the signer:
+workflow, so name it as the signer. `--repo` and `--source-ref` require the
+attestation to come from that repository's release tag:
 
 ```sh
 gh attestation verify oci://ghcr.io/those-who-run/twr-<repo>:X.Y.Z \
-  --owner those-who-run \
+  --repo those-who-run/<repo> \
+  --source-ref refs/tags/vX.Y.Z \
   --signer-workflow those-who-run/.github/.github/workflows/image.yml
 ```
 

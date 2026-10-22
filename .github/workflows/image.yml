@@ -235,7 +235,8 @@ jobs:
             echo "Published \`$NAME:$VERSION\` (\`$DIGEST\`). Verify it with:"
             echo
             echo '```sh'
-            echo "gh attestation verify oci://$NAME:$VERSION --owner $GITHUB_REPOSITORY_OWNER \\"
+            echo "gh attestation verify oci://$NAME:$VERSION \\"
+            echo "  --repo $GITHUB_REPOSITORY --source-ref $GITHUB_REF \\"
             echo "  --signer-workflow those-who-run/.github/.github/workflows/image.yml"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
