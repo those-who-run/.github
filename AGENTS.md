@@ -66,7 +66,9 @@ account isn't a reviewer. Turn it on once there is a second reviewer.
 
 release-please keeps a release PR open from the Conventional Commits on `main`. The
 maintainer merges it by hand, which tags `vX.Y.Z` and creates the GitHub release.
-Callers pin a workflow by that tag's commit SHA:
+`release-pr.yml` does this through `release-please.yml`, the reusable workflow every
+repository calls, so it is tested here first; its digest comment on the release PR
+lists the changes to `agent/` and `scripts/` too. Callers pin a workflow by that tag's commit SHA:
 
 ```yaml
 uses: those-who-run/.github/.github/workflows/<name>.yml@<sha> # vX.Y.Z

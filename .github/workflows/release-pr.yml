@@ -1,0 +1,41 @@
+name: Release PR
+
+# This repository's own release, through its own reusable release-please.yml at the
+# same commit, so the workflow every repository calls is tested where it lives.
+# Callers then pin a workflow here by the release tag's commit SHA.
+#
+# Config: release-please-config.json and .release-please-manifest.json. Before 1.0,
+# feat and fix bump the patch and a breaking change (`!` or a `BREAKING CHANGE:`
+# footer, such as a changed workflow input) bumps the minor. A `Release-As: x.y.z`
+# footer sets the version by hand.
+#
+# workflow_dispatch is the way back if a merged release PR was not tagged (its label
+# still says `autorelease: pending`): run this workflow on main and release-please
+# tags and releases as on a merge.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default; the job grants what release-please.yml's jobs use, and each of
+# them narrows it.
+permissions: {}
+
+# One run at a time; a newer push supersedes a queued one, never a running one.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: ./.github/workflows/release-please.yml
+    with:
+      ci-workflow: ci.yml
+      # Nothing to publish: callers pin a release by its tag's commit SHA.
+      release-workflow: ""
+      # The guard every repository copies, and the scripts run with an admin token.
+      watched-paths: agent/ scripts/

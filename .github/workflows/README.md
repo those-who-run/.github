@@ -151,3 +151,162 @@ checks them out of this repository at the commit the caller pinned
 (`persist-credentials: false`), confirms they match that commit, and moves them out
 of the caller's checkout; it checks their SHA-256 digests again before each step
 that runs one. A PR cannot change the checks that judge it.
+
+## release-please.yml
+
+Keeps a repository's release PR open with release-please, runs the repository's CI
+on it, and comments on it what changed since the last release in the places that
+need a look. The maintainer merges the release PR by hand; that run tags the merge
+commit `vX.Y.Z`, creates the GitHub release, sets the outputs and dispatches the
+caller's release workflow on the new tag, which publishes. Nothing in it merges or
+arms auto-merge (`tests/test_release_workflow.py`).
+
+It reads the caller's `release-please-config.json` and
+`.release-please-manifest.json`, for one package at the root of the repository.
+
+### Inputs
+
+| Input | Default | What it is |
+| --- | --- | --- |
+| `ci-workflow` | `ci.yml` | The caller's CI workflow, by file name. It is dispatched on the release branch, so needs `workflow_dispatch:` in its `on:`. |
+| `release-workflow` | `release.yml` | The caller's release workflow, by file name, dispatched on the new tag after a release. It needs `workflow_dispatch:` in its `on:` and must exist at the tag. Empty for a repository with nothing to publish. |
+| `watched-paths` | (none) | More paths for the digest to list, space-separated; a directory ends in `/`. |
+
+### Outputs
+
+| Output | On a release | Otherwise |
+| --- | --- | --- |
+| `release_created` | `true` | empty |
+| `tag_name` | `v1.2.3` | empty |
+| `version` | `1.2.3` | empty |
+
+### Jobs
+
+- `release-please`: every run. Opens or updates the release PR, or, on the merge
+  of one, tags and releases it. `contents: write` and `pull-requests: write`.
+- `digest`: every run that releases nothing, while a release PR is open. One
+  comment on the release PR, edited in place, from `scripts/release_digest.py`
+  in this repository at the commit the caller pinned. `contents: read` and
+  `pull-requests: write`.
+- `release-pr`: when release-please opened or updated the release PR. Dispatches
+  `ci-workflow` on its branch. `actions: write`.
+- `auto-merge-off`: every run. Turns off auto-merge on the open release PR if
+  anyone armed it, with the GraphQL `disablePullRequestAutoMerge` mutation, which
+  cannot merge. `pull-requests: write`.
+- `release`: when this run released, and `release-workflow` is set. Dispatches
+  `release-workflow` on the new tag. `actions: write`.
+
+### The digest
+
+The release PR is where the maintainer signs off on everything merged since the
+last release, so the digest lists, with the PRs that made each change:
+
+- dependencies: changed manifests and lockfiles in any language (`go.mod`,
+  `go.sum`, `package.json`, `uv.lock`, `requirements*.txt`, ...);
+- workflows and GitHub configuration: anything under `.github/`;
+- agent policy: `.claude/`, `AGENTS.md`, `CLAUDE.md`;
+- code owners: `CODEOWNERS`, wherever it is;
+- build and release files: `Makefile`, `Dockerfile`, release-please's config,
+  `.pre-commit-config.yaml`, the toolchain version files;
+- weakened tests: test files deleted or renamed out of the test files, tests
+  removed (Go, Python, JavaScript and TypeScript), skips and expected failures
+  added;
+- anything under `watched-paths`.
+
+It covers the last `vX.Y.Z` tag (not a pre-release) to the default branch's head.
+It reads git history and runs nothing from it. To see it locally, from a
+repository's root:
+
+```sh
+python3 path/to/.github/scripts/release_digest.py [v0.1.0..main] [--watch scripts/]
+```
+
+### Calling it
+
+The release PR, in `.github/workflows/release-pr.yml`:
+
+```yaml
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # the way back if a merged release PR was not tagged
+
+permissions: {}
+
+# One run at a time; a newer push supersedes a queued one, never a running one.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: those-who-run/.github/.github/workflows/release-please.yml@<sha> # vX.Y.Z
+    with:
+      ci-workflow: ci.yml
+      release-workflow: release.yml
+```
+
+The calling job grants the ceiling and each reusable job narrows it.
+
+### Publishing
+
+Publishing runs in the caller's release workflow (`release.yml`), which
+`release-please.yml` dispatches on the new tag. Its run is on the tag itself, so
+`github.ref` is `refs/tags/vX.Y.Z`: a check that the ref is a release tag passes,
+and a `release` environment limited to `v*` tags lets its jobs in. A workflow
+called directly from the release PR's run would see that run's ref, `main`, and be
+refused by both. A tag made with the `GITHUB_TOKEN` starts no workflow by its push,
+but a dispatch made with that token does, so no other token is needed.
+
+The release workflow calls `image.yml` with `push: true` from that run:
+
+```yaml
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: those-who-run/.github/.github/workflows/image.yml@<sha> # vX.Y.Z
+    with:
+      push: true
+      smoke: docker run --rm "$IMAGE" --version
+```
+
+The outputs (`release_created`, `tag_name`, `version`) stay for anything else the
+release PR's run does on a release.
+
+### The repository's settings
+
+release-please opens its PR with the `GITHUB_TOKEN`. For that, the repository needs
+"Allow GitHub Actions to create and approve pull requests" on. The same setting
+lets a workflow's token approve a PR, so it is safe only where `main`'s ruleset
+requires a code owner's approval: then an approval by `github-actions[bot]`, or by
+an agent's bot account, counts for nothing, since neither is a code owner. Apply
+both together:
+
+```sh
+scripts/protect-repo.sh those-who-run/<repo> --checks "<checks>" --code-owners --actions-prs
+```
+
+The repository also needs a `.github/CODEOWNERS` naming the maintainer.
+
+A PR opened by the `GITHUB_TOKEN` starts no workflow, which is why `release-pr`
+dispatches CI on it: the release PR's required checks then report. A merge by the
+`GITHUB_TOKEN` would not start the release run either, so the release PR is merged
+by a person, never by a workflow or auto-merge (v1's 0.7.6), and `auto-merge-off`
+keeps auto-merge off.
