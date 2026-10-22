@@ -1,0 +1,3 @@
+# What CI's `test` job installs to run the commit hooks. Kept in a file, rather than
+# in the workflow, so Dependabot bumps it (.github/dependabot.yml).
+pre-commit==4.7.0

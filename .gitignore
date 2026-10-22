@@ -1,1 +1,6 @@
 __pycache__/
+# Claude Code: only the shared settings, the guard and its config are tracked.
+.claude/*
+!.claude/settings.json
+!.claude/guard.json
+!.claude/hooks/

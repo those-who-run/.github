@@ -1,0 +1,81 @@
+name: Release PR
+
+# Merged PRs collect in one release PR, `chore(release): x.y.z`, that release-please
+# keeps up to date on every push to main: the next version and CHANGELOG.md. The
+# maintainer merges it by hand, and that merge is the decision to release. The run on
+# the merge tags the merge commit vX.Y.Z and creates the GitHub release from the
+# changelog. Callers then pin a workflow here by that tag's commit SHA.
+#
+# Config: release-please-config.json and .release-please-manifest.json. Before 1.0,
+# feat and fix bump the patch and a breaking change (`!` or a `BREAKING CHANGE:`
+# footer, such as a changed workflow input) bumps the minor. A `Release-As: x.y.z`
+# footer sets the version by hand.
+#
+# Tokens: release-please uses the GITHUB_TOKEN, so no PAT or App key with write
+# access to this repository is needed. A PR that token opens starts no workflow, so
+# the release-pr job dispatches CI on the release branch for its required check.
+#
+# Who merges: the maintainer, by hand. Never auto-merge: armed here, the merge would
+# be the GITHUB_TOKEN's push, which starts no workflow, so the release would never be
+# tagged (v1's 0.7.6). A merge by a person starts this workflow as usual.
+#
+# workflow_dispatch is the way back if a merged release PR was not tagged (its label
+# still says `autorelease: pending`): run this workflow on main and release-please
+# tags and releases as on a merge.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Nothing by default; each job asks for what it uses.
+permissions: {}
+
+# One run at a time; a newer push supersedes a queued one, never a running one.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the release PR's branch, the v* tag and the GitHub release
+      pull-requests: write # opens and updates the release PR
+      issues: write # the autorelease labels on the release PR
+    outputs:
+      prs_created: ${{ steps.rp.outputs.prs_created }}
+      pr: ${{ steps.rp.outputs.pr }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # CI for the release PR, and auto-merge kept off, whenever release-please opened or
+  # updated it in this run.
+  release-pr:
+    needs: release-please
+    if: needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # turns off auto-merge if someone armed it
+      actions: write # dispatches CI on the release branch
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ needs.release-please.outputs.pr }}
+    steps:
+      - name: CI on the release branch
+        run: |
+          branch=$(jq -r '.headBranchName' <<<"$PR")
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+      - name: Auto-merge off
+        run: |
+          number=$(jq -r '.number' <<<"$PR")
+          armed=$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" \
+            --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$armed" = "true" ]; then
+            gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --disable-auto
+          fi
+          echo "#$number waits for the maintainer to merge it." >> "$GITHUB_STEP_SUMMARY"

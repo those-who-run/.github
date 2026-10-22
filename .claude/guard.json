@@ -1,0 +1,6 @@
+{
+  "branch": "main",
+  "release_tags": ["v*"],
+  "release_workflow": "release-please.yml",
+  "owner": "those-who-run"
+}
