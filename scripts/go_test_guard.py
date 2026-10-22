@@ -6,6 +6,12 @@ It reads git history only: the diff from the merge base of <base> and <head> to
 <head>. Reported:
 
 - a `_test.go` file deleted, or renamed to something that is not a test file;
+- a `_test.go` file moved where `go test ./...` on the runner (linux/amd64) does not
+  build it: under a `testdata` or `vendor` directory, a directory or file name
+  starting with `_` or `.`, or a name with a GOOS or GOARCH suffix that excludes
+  linux/amd64 (`a_windows_test.go`);
+- a `_test.go` file that ends up in another module: moved under a nested `go.mod`,
+  or left where it was with a new `go.mod` added above it;
 - a `Test`, `Fuzz` or `Example` function removed that does not come back elsewhere
   in the change;
 - a skip added to a test file (`t.Skip`, `t.Skipf`, `t.SkipNow`);
@@ -17,11 +23,11 @@ It reads git history only: the diff from the merge base of <base> and <head> to
 A line moved unchanged (removed in one place, added in another) does not count.
 
 It always exits 0 when it could read the change, whatever it finds: it writes
-`weakened=true` or `weakened=false` to $GITHUB_OUTPUT, and go.yml passes that on as
-its `tests-weakened` output. checks.yml (#14) then requires a `Tests weakened:` line
-in the PR's description. What it finds goes to the job summary either way.
+`weakened=true` or `weakened=false` to $GITHUB_OUTPUT. The next step in go.yml's job,
+tests_weakened_reason.py, then requires a `Tests weakened:` line in the PR's
+description when it is true. What it finds goes to the job summary either way.
 
-go.yml fetches this file from the `.github` repository at the commit the caller
+go.yml checks this file out of the `.github` repository at the commit the caller
 pinned, never from the PR it checks, and runs it before any of the PR's code.
 Standard library only.
 """
@@ -48,6 +54,66 @@ def is_test_file(path: str) -> bool:
     return path.endswith("_test.go")
 
 
+# go.yml runs on ubuntu-latest: the platform its `go test ./...` builds for.
+RUNNER_OS, RUNNER_ARCH = "linux", "amd64"
+# go/build's syslist.go: the names a file name's suffix can constrain it to.
+KNOWN_OS = frozenset(
+    "aix android darwin dragonfly freebsd hurd illumos ios js linux nacl netbsd "
+    "openbsd plan9 solaris wasip1 windows zos".split()
+)
+KNOWN_ARCH = frozenset(
+    "386 amd64 amd64p32 arm armbe arm64 arm64be loong64 mips mipsle mips64 mips64le "
+    "mips64p32 mips64p32le ppc ppc64 ppc64le riscv riscv64 s390 s390x sparc sparc64 "
+    "wasm".split()
+)
+
+
+def filename_platform(name: str) -> tuple[str | None, str | None]:
+    """The GOOS and GOARCH a file name constrains it to, as go/build reads it: the
+    part after the first `_`, less a final `_test`, ending in `_GOOS`, `_GOARCH` or
+    `_GOOS_GOARCH`. None where it does not constrain."""
+    stem = name.split(".", 1)[0]
+    if "_" not in stem:
+        return None, None
+    parts = stem[stem.index("_") :].split("_")
+    if parts[-1] == "test":
+        parts = parts[:-1]
+    if len(parts) >= 2 and parts[-2] in KNOWN_OS and parts[-1] in KNOWN_ARCH:
+        return parts[-2], parts[-1]
+    if parts and parts[-1] in KNOWN_OS:
+        return parts[-1], None
+    if parts and parts[-1] in KNOWN_ARCH:
+        return None, parts[-1]
+    return None, None
+
+
+def module_root(path: str, roots: set[str]) -> str:
+    """The directory of the deepest go.mod above path ("" for the repository root)."""
+    parts = path.split("/")[:-1]
+    for i in range(len(parts), -1, -1):
+        if "/".join(parts[:i]) in roots:
+            return "/".join(parts[:i])
+    return ""
+
+
+def unbuilt(path: str, root: str) -> str | None:
+    """Why `go test ./...` in root's module on the runner skips path, or None."""
+    rel = path[len(root) + 1 :] if root else path
+    *dirs, name = rel.split("/")
+    for d in dirs:
+        if d in ("testdata", "vendor"):
+            return f"under a {d} directory"
+        if d.startswith(("_", ".")):
+            return f"under {d}/, a directory starting with {d[0]}"
+    if name.startswith(("_", ".")):
+        return f"a file name starting with {name[0]}"
+    goos, goarch = filename_platform(name)
+    if goos and goos != RUNNER_OS or goarch and goarch != RUNNER_ARCH:
+        only = "/".join(x for x in (goos, goarch) if x)
+        return f"a file name that builds only for {only}, not on the runner"
+    return None
+
+
 @dataclass(frozen=True)
 class Finding:
     path: str
@@ -62,6 +128,8 @@ class Diff:
     removed: dict[str, list[str]]
     deleted: list[str]
     renamed: list[tuple[str, str]]
+    base_files: list[str]
+    head_files: list[str]
 
 
 def _git(*args: str, cwd: str | None = None) -> str:
@@ -101,7 +169,40 @@ def read_diff(base: str, head: str, cwd: str | None = None) -> Diff:
             added.setdefault(new, []).append(line[1:])
         elif line.startswith("-") and old:
             removed.setdefault(old, []).append(line[1:])
-    return Diff(added, removed, deleted, renamed)
+    merge_base = _git("merge-base", base, head, cwd=cwd).strip()
+    base_files = [f for f in _git("ls-tree", "-r", "-z", "--name-only", merge_base, cwd=cwd).split("\0") if f]
+    head_files = [f for f in _git("ls-tree", "-r", "-z", "--name-only", head, cwd=cwd).split("\0") if f]
+    return Diff(added, removed, deleted, renamed, base_files, head_files)
+
+
+def _roots(files: list[str]) -> set[str]:
+    return {f.rpartition("/")[0] for f in files if f == "go.mod" or f.endswith("/go.mod")}
+
+
+def _moved_away(diff: Diff) -> list[Finding]:
+    """Test files that still exist (where they were, or renamed to another test file)
+    but that `go test ./...` in their module no longer builds, or that now belong to
+    another module."""
+    base_roots, head_roots = _roots(diff.base_files), _roots(diff.head_files)
+    renamed = dict(diff.renamed)
+    head = set(diff.head_files)
+    found = []
+    for old in sorted(diff.base_files):
+        if not is_test_file(old):
+            continue
+        new = renamed.get(old) or (old if old in head else None)
+        if new is None or not is_test_file(new):
+            continue  # deleted, or renamed away: reported above
+        old_root = module_root(old, base_roots)
+        new_root = module_root(new, head_roots)
+        if unbuilt(old, old_root):
+            continue  # it was not built before either
+        if new_root != old_root:
+            where = f"{new_root}/go.mod" if new_root else "the root go.mod"
+            found.append(Finding(old, f"test file now in another module: {new} is under {where}"))
+        elif why := unbuilt(new, new_root):
+            found.append(Finding(old, f"test file moved where go test ./... skips it: {new}, {why}"))
+    return found
 
 
 def _added_in_tests(diff: Diff, pattern: re.Pattern[str], what: str) -> list[Finding]:
@@ -142,6 +243,7 @@ def weakenings(base: str, head: str, cwd: str | None = None) -> list[Finding]:
     for old, new in diff.renamed:
         if is_test_file(old) and not is_test_file(new):
             found.append(Finding(old, f"test file renamed to {new}, which is not a test file"))
+    found += _moved_away(diff)
 
     # A test function removed in one place and not added in another is a removal.
     added_names = Counter(
@@ -188,7 +290,7 @@ def report(found: list[Finding]) -> str:
     lines += [
         "",
         "The PR's description needs a line `Tests weakened: <reason>` saying which "
-        "test and why (checks.yml checks it). If the change is not right, fix the "
+        "test and why, of at least ten characters. If the change is not right, fix the "
         "code, not the test.",
     ]
     return "\n".join(lines) + "\n"

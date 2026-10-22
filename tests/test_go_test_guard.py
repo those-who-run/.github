@@ -89,6 +89,10 @@ class Repo:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
+    def mv(self, old: str, new: str) -> None:
+        (self.path / new).parent.mkdir(parents=True, exist_ok=True)
+        self.git("mv", old, new)
+
     def commit(self, message: str) -> None:
         self.git("add", "-A")
         self.git("commit", "-q", "-m", message)
@@ -104,6 +108,7 @@ class GoTestGuard(CleanGit):
         self.repo.write("lap/lap_test.go", LAP_TEST)
         self.repo.write(".github/workflows/ci.yml", CALLER)
         self.repo.write("Makefile", "COVERAGE_FLOOR ?= 90\n")
+        self.repo.write("go.mod", "module example.com/lap\n\ngo 1.27.0\n")
         self.repo.commit("base")
         self.repo.git("checkout", "-q", "-b", "pr")
 
@@ -138,7 +143,31 @@ class GoTestGuard(CleanGit):
         self.assertEqual(self.found(), [])
 
     def test_a_test_file_renamed_to_a_test_file_weakens_nothing(self):
-        self.repo.git("mv", "lap/lap_test.go", "lap/laps_test.go")
+        self.repo.mv("lap/lap_test.go", "lap/laps_test.go")
+        self.assertEqual(self.found(), [])
+
+    def test_a_test_file_moved_to_another_package_weakens_nothing(self):
+        self.repo.mv("lap/lap_test.go", "pit/lap_test.go")
+        self.assertEqual(self.found(), [])
+
+    def test_a_test_file_renamed_for_the_runners_platform_weakens_nothing(self):
+        self.repo.mv("lap/lap_test.go", "lap/lap_linux_amd64_test.go")
+        self.assertEqual(self.found(), [])
+
+    def test_a_test_file_named_after_a_platform_without_a_suffix_weakens_nothing(self):
+        # go/build reads only the part after the first `_`: this is not constrained.
+        self.repo.mv("lap/lap_test.go", "lap/windows_test.go")
+        self.assertEqual(self.found(), [])
+
+    def test_a_new_go_mod_away_from_the_tests_weakens_nothing(self):
+        self.repo.write("tools/go.mod", "module example.com/lap/tools\n\ngo 1.27.0\n")
+        self.assertEqual(self.found(), [])
+
+    def test_a_test_file_moved_inside_testdata_weakens_nothing(self):
+        self.repo.write("lap/testdata/case_test.go", "package lap\n")
+        self.repo.commit("a fixture")
+        self.repo.git("branch", "-f", "main")
+        self.repo.mv("lap/testdata/case_test.go", "lap/testdata/old_case_test.go")
         self.assertEqual(self.found(), [])
 
     # Each weakening, one at a time.
@@ -147,7 +176,7 @@ class GoTestGuard(CleanGit):
         self.assertEqual(self.found(), ["test file deleted"])
 
     def test_a_test_file_renamed_away(self):
-        self.repo.git("mv", "lap/lap_test.go", "lap/lap_cases.go")
+        self.repo.mv("lap/lap_test.go", "lap/lap_cases.go")
         self.assertEqual(
             self.found(), ["test file renamed to lap/lap_cases.go, which is not a test file"]
         )
@@ -155,6 +184,90 @@ class GoTestGuard(CleanGit):
     def test_a_removed_test_function(self):
         self.edit("lap/lap_test.go", "func TestBest(t *testing.T) {\n\tt.Log(\"best\")\n}\n", "")
         self.assertEqual(self.found(), ["test removed: TestBest"])
+
+    def test_a_removed_fuzz_function(self):
+        self.edit(
+            "lap/lap_test.go", "func TestBest", "func FuzzLap(f *testing.F) {}\n\nfunc TestBest"
+        )
+        self.repo.commit("a fuzz test")
+        self.repo.git("branch", "-f", "main")
+        self.edit("lap/lap_test.go", "func FuzzLap(f *testing.F) {}\n\n", "")
+        self.assertEqual(self.found(), ["test removed: FuzzLap"])
+
+    def test_a_removed_example_function(self):
+        self.edit("lap/lap_test.go", "func TestBest", "func ExampleLap() {}\n\nfunc TestBest")
+        self.repo.commit("an example")
+        self.repo.git("branch", "-f", "main")
+        self.edit("lap/lap_test.go", "func ExampleLap() {}\n\n", "")
+        self.assertEqual(self.found(), ["test removed: ExampleLap"])
+
+    def test_a_renamed_test_function(self):
+        # A new name is a new test: the old one is reported, to be explained.
+        self.edit("lap/lap_test.go", "func TestBest", "func TestFastest")
+        self.assertEqual(self.found(), ["test removed: TestBest"])
+
+    def test_a_test_file_renamed_for_another_platform(self):
+        self.repo.mv("lap/lap_test.go", "lap/lap_windows_test.go")
+        self.assertEqual(
+            self.found(),
+            [
+                "test file moved where go test ./... skips it: lap/lap_windows_test.go, "
+                "a file name that builds only for windows, not on the runner"
+            ],
+        )
+
+    def test_a_test_file_renamed_for_another_architecture(self):
+        self.repo.mv("lap/lap_test.go", "lap/lap_linux_arm64_test.go")
+        self.assertEqual(
+            self.found(),
+            [
+                "test file moved where go test ./... skips it: lap/lap_linux_arm64_test.go, "
+                "a file name that builds only for linux/arm64, not on the runner"
+            ],
+        )
+
+    def test_a_test_file_moved_into_testdata(self):
+        self.repo.mv("lap/lap_test.go", "lap/testdata/lap_test.go")
+        self.assertEqual(
+            self.found(),
+            [
+                "test file moved where go test ./... skips it: lap/testdata/lap_test.go, "
+                "under a testdata directory"
+            ],
+        )
+
+    def test_a_test_file_moved_into_vendor(self):
+        self.repo.mv("lap/lap_test.go", "vendor/lap/lap_test.go")
+        self.assertEqual(
+            self.found(),
+            [
+                "test file moved where go test ./... skips it: vendor/lap/lap_test.go, "
+                "under a vendor directory"
+            ],
+        )
+
+    def test_a_test_file_moved_under_an_underscore_directory(self):
+        self.repo.mv("lap/lap_test.go", "_old/lap_test.go")
+        self.assertEqual(
+            self.found(),
+            [
+                "test file moved where go test ./... skips it: _old/lap_test.go, "
+                "under _old/, a directory starting with _"
+            ],
+        )
+
+    def test_a_test_file_moved_under_a_new_nested_go_mod(self):
+        self.repo.mv("lap/lap_test.go", "sub/lap_test.go")
+        self.repo.write("sub/go.mod", "module example.com/sub\n\ngo 1.27.0\n")
+        self.assertEqual(
+            self.found(), ["test file now in another module: sub/lap_test.go is under sub/go.mod"]
+        )
+
+    def test_a_new_go_mod_above_a_test_file(self):
+        self.repo.write("lap/go.mod", "module example.com/lap/lap\n\ngo 1.27.0\n")
+        self.assertEqual(
+            self.found(), ["test file now in another module: lap/lap_test.go is under lap/go.mod"]
+        )
 
     def test_a_removed_suite_method(self):
         self.edit(

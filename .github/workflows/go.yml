@@ -1,44 +1,27 @@
 name: Go
 
-# The language checks every Go repository runs on a PR: gofmt, `go mod tidy`, go
-# vet, golangci-lint, the tests with the race detector, skipped tests failing and a
-# coverage floor, go build, govulncheck, and the Go test guard. The language-neutral
-# checks come from checks.yml, called beside this one.
+# The language checks every Go repository runs on a PR: the Go test guard and the
+# `Tests weakened:` reason it asks for, gofmt, `go mod tidy`, go vet, golangci-lint,
+# the tests with the race detector, skipped tests failing and a coverage floor, go
+# build and govulncheck. The language-neutral checks come from checks.yml, called
+# beside this one as a separate required check. README.md in this directory has the
+# inputs, the job name and a caller.
 #
-# Call it from a job of its own, pinned by the release tag's commit SHA, and pass the
-# test guard's finding to checks.yml, which asks the PR for a `Tests weakened:` line:
-#
-#   jobs:
-#     go:
-#       permissions:
-#         contents: read
-#       uses: those-who-run/.github/.github/workflows/go.yml@<sha> # vX.Y.Z
-#       with:
-#         coverage-floor: 90
-#     checks:
-#       needs: go
-#       if: ${{ !cancelled() }}
-#       permissions:
-#         contents: read
-#         pull-requests: read
-#       uses: those-who-run/.github/.github/workflows/checks.yml@<sha> # vX.Y.Z
-#       with:
-#         tests-weakened: ${{ needs.go.outputs.tests-weakened == 'true' }}
-#
-# Job name: `check`. Rulesets require it by name as `<caller job> / check`, so the
-# caller above reports `go / check`, beside checks.yml's `checks / checks`. The name
-# stays: renaming it leaves every caller's `main` waiting for a check that never
-# reports.
+# Job name: `check`. Rulesets require it by name as `<caller job> / check`, so a
+# caller job named `go` reports `go / check`, beside checks.yml's `checks / checks`.
+# The name stays: renaming it leaves every caller's `main` waiting for a check that
+# never reports.
 #
 # The module pins its tools in tools/go.mod (checksummed in tools/go.sum), apart from
 # its own go.mod, and both this workflow and `make check` run them with
-# `go tool -modfile=tools/go.mod golangci-lint|govulncheck`. golangci-lint reads the
-# module's own config (.golangci.yml).
+# `go tool -modfile=tools/go.mod`. tools/go.mod must name golangci-lint and
+# govulncheck from their upstream modules, with no `replace` directive.
+# golangci-lint reads the module's own config (.golangci.yml).
 #
-# The checks themselves are scripts/go_check.py and scripts/go_test_guard.py in this
-# repository, fetched at the commit the caller pinned, never from the PR being
-# checked, so a PR can't edit the guard that judges it. The guard runs before any of
-# the PR's code.
+# The checks themselves are scripts/go_check.py, scripts/go_test_guard.py and
+# scripts/tests_weakened_reason.py in this repository, checked out at the commit the
+# caller pinned, never from the PR being checked, so a PR can't edit the checks that
+# judge it. The guard and the reason check run before any of the PR's code.
 #
 # Changing an input (adding a required one, removing or renaming one, or changing
 # a default's meaning) is a breaking change: see AGENTS.md.
@@ -57,17 +40,10 @@ on:
         default: "."
       cgo:
         description: >-
-          Whether vet, lint and build run with cgo. The tests always do: the race
-          detector needs it.
+          Whether vet, lint and build run with cgo. It does not apply to the tests,
+          which always run with cgo: the race detector needs it.
         type: boolean
         default: false
-    outputs:
-      tests-weakened:
-        description: >-
-          'true' when the test guard found the PR weakening a test, else 'false'
-          (always 'false' off a pull request). checks.yml takes it as its
-          `tests-weakened` input.
-        value: ${{ jobs.check.outputs.tests-weakened }}
 
 # Nothing by default; the job asks for what it uses.
 permissions: {}
@@ -79,36 +55,72 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    outputs:
-      tests-weakened: ${{ steps.guard.outputs.weakened || 'false' }}
+      pull-requests: read # the reason check reads the PR's description
     env:
       CGO_ENABLED: ${{ inputs.cgo && '1' || '0' }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      # This workflow's scripts at the commit the caller pinned. The job context names
-      # that commit (job.workflow_repository, job.workflow_sha); it comes in whole
-      # through toJSON because actionlint v1.7.12 does not know those two properties
-      # yet. They go to the runner's temporary directory, outside the checkout, so
-      # nothing in the PR can stand in for them.
-      - name: Fetch the checks
+      # This workflow's own commit, which the caller pinned. The job context names it
+      # (job.workflow_repository, job.workflow_sha); it comes in whole through toJSON
+      # because actionlint v1.7.12 does not know those two properties yet.
+      - name: Find this workflow's commit
+        id: workflow
         working-directory: ${{ runner.temp }}
         env:
           JOB_CONTEXT: ${{ toJSON(job) }}
         run: |
-          WORKFLOW_REPOSITORY=$(jq -r '.workflow_repository // empty' <<<"$JOB_CONTEXT")
-          WORKFLOW_SHA=$(jq -r '.workflow_sha // empty' <<<"$JOB_CONTEXT")
-          if ! [[ $WORKFLOW_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && $WORKFLOW_SHA =~ ^[0-9a-f]{40}$ ]]; then
+          repository=$(jq -r '.workflow_repository // empty' <<<"$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<<"$JOB_CONTEXT")
+          if ! [[ $repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && $sha =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::The job context does not name this workflow's repository and commit."
             exit 1
           fi
-          mkdir -p go-checks
-          for f in go_check.py go_test_guard.py; do
-            curl --fail --silent --show-error --location --proto '=https' --retry 3 \
-              -o "go-checks/$f" \
-              "https://raw.githubusercontent.com/$WORKFLOW_REPOSITORY/$WORKFLOW_SHA/scripts/$f"
+          {
+            echo "repository=$repository"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # The checks' scripts at that commit. checkout places a repository only inside
+      # the workspace, so they go there first and then to the runner's temporary
+      # directory, outside the caller's checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.workflow.outputs.repository }}
+          ref: ${{ steps.workflow.outputs.sha }}
+          path: .go-checks
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      # git checked the files out by object ID from the pinned commit, and HEAD must
+      # be that commit, so the scripts are the ones the caller pinned. Their SHA-256
+      # digests, taken here, are checked again before each step that runs them.
+      - name: Set the checks apart
+        id: checks
+        working-directory: ${{ runner.temp }}
+        env:
+          WORKFLOW_SHA: ${{ steps.workflow.outputs.sha }}
+        run: |
+          src="$GITHUB_WORKSPACE/.go-checks"
+          if [ "$(git -C "$src" rev-parse HEAD)" != "$WORKFLOW_SHA" ]; then
+            echo "::error::The checks were not checked out at $WORKFLOW_SHA."
+            exit 1
+          fi
+          for f in go_check.py go_test_guard.py tests_weakened_reason.py; do
+            if [ "$(git -C "$src" hash-object "scripts/$f")" != "$(git -C "$src" rev-parse "HEAD:scripts/$f")" ]; then
+              echo "::error::scripts/$f does not match $WORKFLOW_SHA."
+              exit 1
+            fi
           done
+          mkdir go-checks
+          mv "$src"/scripts/go_check.py "$src"/scripts/go_test_guard.py "$src"/scripts/tests_weakened_reason.py go-checks/
+          rm -rf "$src"
+          {
+            echo "sha256<<SHA256_END"
+            sha256sum "$RUNNER_TEMP"/go-checks/*.py
+            echo "SHA256_END"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,19 +128,36 @@ jobs:
           fetch-depth: 0 # the test guard diffs the PR against its base
 
       # Before any of the PR's code runs, so nothing it does can change the finding.
-      # It reports and sets the output; checks.yml asks for the reason.
       - name: Test guard
         id: guard
         if: github.event_name == 'pull_request'
         working-directory: .
         env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_test_guard.py" "$BASE" "$HEAD"
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_test_guard.py" "$BASE" "$HEAD"
+
+      # A PR that weakens a test says why, in a line `Tests weakened: <reason>` in its
+      # description. The description is read from the API when this runs, so a re-run
+      # after an edit sees it; it is never expanded into the script.
+      - name: Weakened tests need a reason
+        if: github.event_name == 'pull_request' && steps.guard.outcome == 'success'
+        working-directory: .
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+          WEAKENED: ${{ steps.guard.outputs.weakened }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/tests_weakened_reason.py" --weakened "$WEAKENED" --pr "$PR"
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         id: go
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.checks.outcome == 'success' }}
         with:
           go-version-file: ${{ inputs.working-directory }}/go.mod
           cache-dependency-path: ${{ inputs.working-directory }}/**/go.sum
@@ -136,24 +165,51 @@ jobs:
       # Each check runs whatever the one before found, so one run shows every failure.
       - name: gofmt
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" fmt
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" fmt
       - name: go mod tidy
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" tidy
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" tidy
       - name: go vet
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" vet
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" vet
       - name: golangci-lint
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" lint
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" lint
       - name: Tests (race detector, no skips, coverage floor)
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
         env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
           FLOOR: ${{ inputs.coverage-floor }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" test --floor "$FLOOR"
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" test --floor "$FLOOR"
       - name: go build
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" build
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" build
       - name: govulncheck
         if: ${{ !cancelled() && steps.go.outcome == 'success' }}
-        run: python3 "$RUNNER_TEMP/go-checks/go_check.py" vuln
+        env:
+          CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
+        run: |
+          sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
+          python3 "$RUNNER_TEMP/go-checks/go_check.py" vuln

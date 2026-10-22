@@ -5,7 +5,8 @@
 Run it from the module's directory (the one with go.mod). The checks:
 
     fmt     gofmt lists no file
-    tidy    `go mod tidy` would change neither go.mod nor go.sum
+    tidy    `go mod tidy` would change neither go.mod nor go.sum, nor the tools
+            module's tools/go.mod and tools/go.sum
     vet     go vet ./...
     lint    golangci-lint, the caller's config, the version in tools/go.mod
     test    the race detector, shuffled order; fails on a failing or skipped test,
@@ -16,9 +17,13 @@ Run it from the module's directory (the one with go.mod). The checks:
 
 The tools run with `go tool -modfile=tools/go.mod <tool>`: their versions are pinned
 in the module's own tools/go.mod and checksummed in tools/go.sum, so `make check` on
-a laptop and CI run the same binaries.
+a laptop and CI run the same binaries. Before lint and vuln run a tool, tools/go.mod
+must require golangci-lint and govulncheck from their upstream modules
+(github.com/golangci/golangci-lint/v2, golang.org/x/vuln), list them by those paths
+in its `tool` block, and have no `replace` directive; the tools then run by their
+full package paths, with GOWORK=off.
 
-go.yml fetches this file from the `.github` repository at the commit the caller
+go.yml checks this file out of the `.github` repository at the commit the caller
 pinned, never from the PR it checks. tests/go/test_go_check.py breaks a small module
 one way at a time and expects the matching check to fail. Standard library only.
 """
@@ -36,6 +41,13 @@ from pathlib import Path
 
 DEFAULT_FLOOR = 90.0
 DEFAULT_TOOLS = "tools/go.mod"
+# The tools go.yml runs, by package path, and the upstream module each comes from.
+GOLANGCI_LINT = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+GOVULNCHECK = "golang.org/x/vuln/cmd/govulncheck"
+TOOL_MODULES = {
+    GOLANGCI_LINT: "github.com/golangci/golangci-lint/v2",
+    GOVULNCHECK: "golang.org/x/vuln",
+}
 _TOTAL = re.compile(r"^total:\s+\(statements\)\s+([\d.]+)%\s*$", re.MULTILINE)
 
 
@@ -99,34 +111,75 @@ def check_fmt(_: argparse.Namespace) -> bool:
     return not unformatted
 
 
-def check_tidy(_: argparse.Namespace) -> bool:
+def check_tidy(args: argparse.Namespace) -> bool:
     # -diff prints what tidy would change and exits non-zero, touching nothing.
+    ok = True
     if run("go", "mod", "tidy", "-diff") != 0:
         error("go.mod or go.sum is not tidy: run go mod tidy", "go.mod")
-        return False
-    return True
+        ok = False
+    # The tools module is a module of its own, in its own directory: tidied there,
+    # it keeps the tools' requirements and nothing else.
+    tools = Path(args.tools_modfile)
+    if tools.is_file():
+        print(f"+ (in {tools.parent}) go mod tidy -diff", flush=True)
+        if subprocess.run(["go", "mod", "tidy", "-diff"], cwd=tools.parent).returncode != 0:
+            error(
+                f"{tools} or its go.sum is not tidy: run go mod tidy in {tools.parent}",
+                str(tools),
+            )
+            ok = False
+    return ok
 
 
 def check_vet(_: argparse.Namespace) -> bool:
     return run("go", "vet", "./...") == 0
 
 
-def _tool(args: argparse.Namespace, *tool: str) -> bool:
+def tools_problems(modfile: str) -> list[str]:
+    """What keeps tools/go.mod from naming the upstream tools: a `replace`
+    directive, or a tool or its module missing."""
+    out = subprocess.run(
+        ["go", "mod", "edit", "-json", modfile], capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        return [f"go mod edit could not read it: {out.stderr.strip()}"]
+    mod = json.loads(out.stdout)
+    problems = []
+    for r in mod.get("Replace") or []:
+        old = r["Old"]["Path"] + (f"@{r['Old']['Version']}" if r["Old"].get("Version") else "")
+        problems.append(f"it has a replace directive, for {old}: remove it")
+    required = {r["Path"] for r in mod.get("Require") or []}
+    tools = {t["Path"] for t in mod.get("Tool") or []}
+    for tool, module in TOOL_MODULES.items():
+        if module not in required:
+            problems.append(f"it does not require {module}")
+        if tool not in tools:
+            problems.append(f"its tool block does not list {tool}")
+    return problems
+
+
+def _tool(args: argparse.Namespace, tool: str, *tool_args: str) -> bool:
     if not Path(args.tools_modfile).is_file():
         error(
             f"{args.tools_modfile} is missing: the module pins its tools there "
             "(go get -modfile=tools/go.mod -tool <tool>@<version>)"
         )
         return False
-    return run("go", "tool", f"-modfile={args.tools_modfile}", *tool) == 0
+    if problems := tools_problems(args.tools_modfile):
+        for problem in problems:
+            error(f"{args.tools_modfile}: {problem}", args.tools_modfile)
+        return False
+    # By full package path, outside any go.work, so only tools/go.mod decides.
+    env = {**os.environ, "GOWORK": "off"}
+    return run("go", "tool", f"-modfile={args.tools_modfile}", tool, *tool_args, env=env) == 0
 
 
 def check_lint(args: argparse.Namespace) -> bool:
-    return _tool(args, "golangci-lint", "run", "./...")
+    return _tool(args, GOLANGCI_LINT, "run", "./...")
 
 
 def check_vuln(args: argparse.Namespace) -> bool:
-    return _tool(args, "govulncheck", "./...")
+    return _tool(args, GOVULNCHECK, "./...")
 
 
 def check_build(_: argparse.Namespace) -> bool:

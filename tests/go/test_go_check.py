@@ -140,6 +140,63 @@ class GoCheck(unittest.TestCase):
         shutil.rmtree(self.module / "tools")
         self.assertFails("lint", "tools/go.mod is missing")
 
+    def edit_tools(self, old: str, new: str) -> None:
+        path = self.module / "tools" / "go.mod"
+        text = path.read_text()
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new, 1))
+
+    def test_an_untidy_tools_module(self):
+        # govulncheck taken out of the tool block, its requirements left behind.
+        self.edit_tools("\tgolang.org/x/vuln/cmd/govulncheck\n", "")
+        self.assertFails("tidy", "tools/go.mod or its go.sum is not tidy")
+
+    def test_a_replace_in_the_tools_module(self):
+        self.write("vuln/go.mod", "module golang.org/x/vuln\n\ngo 1.27.0\n")
+        with (self.module / "tools" / "go.mod").open("a") as f:
+            f.write("\nreplace golang.org/x/vuln => ../vuln\n")
+        for check in ("lint", "vuln"):
+            self.assertFails(check, "has a replace directive, for golang.org/x/vuln: remove it")
+
+    def test_a_tools_module_without_golangci_lint(self):
+        self.edit_tools("\tgithub.com/golangci/golangci-lint/v2 v2.14.0 // indirect\n", "")
+        self.assertFails("lint", "does not require github.com/golangci/golangci-lint/v2")
+
+    def test_a_tools_module_with_another_golangci_lint(self):
+        self.edit_tools(
+            "\tgithub.com/golangci/golangci-lint/v2/cmd/golangci-lint\n",
+            "\texample.com/fork/golangci-lint\n",
+        )
+        self.assertFails(
+            "lint", "tool block does not list github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+        )
+
+    def test_a_tools_module_without_govulncheck(self):
+        self.edit_tools("\tgolang.org/x/vuln v1.9.0 // indirect\n", "")
+        self.assertFails("vuln", "does not require golang.org/x/vuln")
+
+    def test_a_build_failure(self):
+        self.write("broken.go", 'package fixture\n\n// Broken does not compile.\nfunc Broken() int { return "one" }\n')
+        self.assertFails("build", "cannot use")
+
+    def test_a_reachable_vulnerability(self):
+        # golang.org/x/text before v0.3.7 reads out of bounds in language.Parse
+        # (GO-2021-0113), and Tag calls it.
+        self.write(
+            "lang.go",
+            'package fixture\n\nimport "golang.org/x/text/language"\n\n'
+            "// Tag parses a language tag.\n"
+            "func Tag(s string) (language.Tag, error) { return language.Parse(s) }\n",
+        )
+        subprocess.run(
+            ["go", "get", "golang.org/x/text@v0.3.5"],
+            cwd=self.module,
+            env=ENV,
+            check=True,
+            capture_output=True,
+        )
+        self.assertFails("vuln", "GO-2021-0113")
+
 
 if __name__ == "__main__":
     unittest.main()
