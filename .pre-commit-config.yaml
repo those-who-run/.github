@@ -1,6 +1,6 @@
 # The checks a commit meets before it is made: `pre-commit install` sets them up, CI's
-# `test` job runs them on every file, and .claude/hooks/guard.py stops an agent from
-# skipping them. They come from v1's .pre-commit-config.yaml, without its Python and
+# `checks` job (.github/workflows/checks.yml) runs them on every file, and
+# .claude/hooks/guard.py stops an agent from skipping them. They come from v1's .pre-commit-config.yaml, without its Python and
 # web hooks, plus shellcheck for scripts/.
 #
 # The external hooks are pinned to a commit SHA, the tag in the `frozen:` comment;
@@ -46,6 +46,8 @@ repos:
   # (CI) there is nothing staged, so it scans nothing there; gitleaks-pr does that
   # job in CI: every commit from HEAD's first parent to HEAD, which on a PR's merge
   # commit is every commit in the PR, even one made with --no-verify or on the web.
+  # checks.yml runs gitleaks-pr from this file, at the commit a caller pins, in
+  # every repository that calls it: keep the alias.
   - repo: https://github.com/gitleaks/gitleaks
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
     hooks:
@@ -80,8 +82,8 @@ repos:
       - id: shellcheck
 
   # The commit message: a conventional commit with one of release-please's types
-  # (release-please-config.json). CI checks a PR's title, the squash commit's
-  # subject, with the same hook.
+  # (release-please-config.json). checks.yml checks a PR's title, the squash
+  # commit's subject, against the same types (its commit-types input).
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: 91ab4bf57e58b32adf1a122681f6ebe164d081c8  # frozen: v4.4.0
     hooks:

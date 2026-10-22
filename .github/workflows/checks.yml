@@ -1,0 +1,216 @@
+name: Checks
+
+# The language-neutral checks every repository runs on a PR, whatever its language:
+# dependency review, the repository's commit hooks on every file, gitleaks over the
+# PR's commits, the PR title as a Conventional Commit, and the reason a PR that
+# weakens tests must give. A repository's language checks come from their own
+# reusable workflow, called beside this one.
+#
+# Call it from a job of its own, pinned by the release tag's commit SHA:
+#
+#   jobs:
+#     checks:
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#       uses: those-who-run/.github/.github/workflows/checks.yml@<sha> # vX.Y.Z
+#
+# Job name: `checks`. Rulesets require it by name as `<caller job> / checks`, so the
+# caller above reports `checks / checks`. The name stays: renaming it leaves every
+# caller's `main` waiting for a check that never reports.
+#
+# pre-commit itself (hash-pinned in .github/requirements-ci.txt) and the gitleaks
+# hook for the PR's commits (in .pre-commit-config.yaml) come from this repository
+# at the commit the caller pinned, so every caller scans with the same, reviewed
+# versions and Dependabot bumps them in one place. The commit hooks on every file
+# are the caller's own, from its .pre-commit-config.yaml.
+#
+# Changing an input (adding a required one, removing or renaming one, or changing
+# a default's meaning) is a breaking change: see AGENTS.md.
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: The Python that runs pre-commit and any local Python hooks.
+        type: string
+        default: "3.13"
+      go-version-file:
+        description: >-
+          A go.mod or .go-version to install Go from, for local hooks that run Go
+          tools. Empty: no Go.
+        type: string
+        default: ""
+      setup:
+        description: >-
+          Shell commands run before the commit hooks, to install what the
+          repository's local hooks need (for example `make tools`). Empty: nothing.
+        type: string
+        default: ""
+      commit-types:
+        description: >-
+          The Conventional Commit types a PR title may use, separated by spaces.
+          The default is release-please's types, as in the commit-msg hook.
+        type: string
+        default: feat fix perf revert deps docs refactor test build ci chore style
+      dependency-review:
+        description: >-
+          Review the dependencies a PR adds or changes. It needs the repository's
+          dependency graph, which public repositories have by default.
+        type: boolean
+        default: true
+      tests-weakened:
+        description: >-
+          Whether the caller's test guard found the PR weakening a test. When true,
+          the PR's description needs a line `Tests weakened: <reason>`.
+        type: boolean
+        default: false
+
+# Nothing by default; the job asks for what it uses.
+permissions: {}
+
+# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # the weakened-tests check reads the PR's description
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the PR's commits
+
+      # A squash merge takes the PR title as the commit subject, which no local hook
+      # sees. The title and the types come in through env:, never expanded into the
+      # script; each type must be a plain word, so it is safe inside the pattern.
+      - name: PR title is a conventional commit
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          COMMIT_TYPES: ${{ inputs.commit-types }}
+        run: |
+          types=""
+          for t in $COMMIT_TYPES; do
+            if ! [[ $t =~ ^[a-z]+$ ]]; then
+              echo "::error::commit-types: '$t' is not a lower-case word"
+              exit 1
+            fi
+            types="${types:+$types|}$t"
+          done
+          if [ -z "$types" ]; then
+            echo "::error::commit-types is empty"
+            exit 1
+          fi
+          pattern="^($types)(\([^()]+\))?!?: [^[:space:]]"
+          if ! [[ $PR_TITLE =~ $pattern ]]; then
+            echo "::error::The PR title is not a Conventional Commit: '$PR_TITLE'. It needs '<type>[(scope)][!]: <description>', with a type from: $COMMIT_TYPES"
+            exit 1
+          fi
+          echo "PR title: '$PR_TITLE'"
+
+      # A PR that deletes, skips or loosens tests says why, in a line
+      # `Tests weakened: <reason>` in its description. The caller's own guard decides
+      # whether tests were weakened, since that depends on the language. The
+      # description is fetched when this runs, so a re-run sees an edit, and it is
+      # never expanded into the script.
+      - name: Weakened tests need a reason
+        if: github.event_name == 'pull_request' && inputs.tests-weakened
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          body=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' | tr -d '\r')
+          if ! grep -Eq '^[[:space:]]*Tests weakened:[[:space:]]*[^[:space:]].{9,}' <<<"$body"; then
+            echo "::error::This PR weakens tests: its description needs a line 'Tests weakened: <which test and why>', of at least 10 characters."
+            exit 1
+          fi
+          grep -E '^[[:space:]]*Tests weakened:' <<<"$body" >> "$GITHUB_STEP_SUMMARY"
+
+      # What the PR changes in the dependency manifests and lock files, and in the
+      # actions its workflows use: fails on a known vulnerability of moderate
+      # severity or above, or a licence outside v1's list. Dev packages count too:
+      # they run in CI with a token.
+      - name: Dependency review
+        if: github.event_name == 'pull_request' && inputs.dependency-review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
+          allow-licenses: >-
+            0BSD, Apache-2.0, BlueOak-1.0.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0,
+            GPL-3.0-only, GPL-3.0-or-later, ISC, LGPL-3.0-only, LGPL-3.0-or-later,
+            MIT, MIT-0, MPL-2.0, PSF-2.0, Python-2.0, Unlicense, Zlib
+          show-openssf-scorecard: true
+          comment-summary-in-pr: never
+
+      # This workflow's own files at the commit the caller pinned: pre-commit's
+      # hash-pinned requirements and the config with the gitleaks-pr hook. The job
+      # context names that commit (job.workflow_repository, job.workflow_sha); it
+      # comes in whole through toJSON because actionlint v1.7.12 does not know those
+      # two properties yet.
+      - name: Fetch the checks' tooling
+        id: tooling
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          WORKFLOW_REPOSITORY=$(jq -r '.workflow_repository // empty' <<<"$JOB_CONTEXT")
+          WORKFLOW_SHA=$(jq -r '.workflow_sha // empty' <<<"$JOB_CONTEXT")
+          if ! [[ $WORKFLOW_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && $WORKFLOW_SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The job context does not name this workflow's repository and commit."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/checks-tooling"
+          mkdir -p "$dir"
+          for f in .github/requirements-ci.txt .pre-commit-config.yaml; do
+            curl --fail --silent --show-error --location --proto '=https' --retry 3 \
+              -o "$dir/$(basename "$f")" \
+              "https://raw.githubusercontent.com/$WORKFLOW_REPOSITORY/$WORKFLOW_SHA/$f"
+          done
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "hash=$(cat "$dir/.pre-commit-config.yaml" .pre-commit-config.yaml | sha256sum | cut -c1-64)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Go
+        if: inputs.go-version-file != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+
+      # pre-commit and its dependencies, each pinned by version and hash, so a
+      # changed or added file on PyPI fails the install.
+      - name: Install pre-commit
+        env:
+          TOOLING: ${{ steps.tooling.outputs.dir }}
+        run: python -m pip install --disable-pip-version-check --require-hashes -r "$TOOLING/requirements-ci.txt"
+
+      # Through env: and a shell of its own, so the caller's commands are never
+      # expanded into this script.
+      - name: Setup
+        if: inputs.setup != ''
+        env:
+          SETUP: ${{ inputs.setup }}
+        run: bash -euo pipefail -c "$SETUP"
+
+      # The hook environments, cached by both configs they come from.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ steps.tooling.outputs.hash }}
+
+      # The repository's commit hooks on every file: what a commit runs locally, so
+      # skipping them there gains nothing.
+      - name: Commit hooks
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      # The commit hook scans only what is staged, so a commit made with --no-verify,
+      # outside Claude Code or on the web would pass it: scan every commit in the PR.
+      # HEAD is the PR's merge commit, so HEAD^1..HEAD is the PR's commits.
+      - name: No secrets in the PR's commits
+        if: github.event_name == 'pull_request'
+        env:
+          TOOLING: ${{ steps.tooling.outputs.dir }}
+        run: pre-commit run gitleaks-pr --hook-stage manual --config "$TOOLING/.pre-commit-config.yaml"
