@@ -2,9 +2,9 @@ name: Checks
 
 # The language-neutral checks every repository runs on a PR, whatever its language:
 # dependency review, the repository's commit hooks on every file, gitleaks over the
-# PR's commits, the PR title as a Conventional Commit, and the reason a PR that
-# weakens tests must give. A repository's language checks come from their own
-# reusable workflow, called beside this one.
+# PR's commits and the PR title as a Conventional Commit. A repository's language
+# checks come from their own reusable workflow, called beside this one as a separate
+# required check; that workflow also checks the reason a PR that weakens tests gives.
 #
 # Call it from a job of its own, pinned by the release tag's commit SHA:
 #
@@ -12,12 +12,13 @@ name: Checks
 #     checks:
 #       permissions:
 #         contents: read
-#         pull-requests: read
 #       uses: those-who-run/.github/.github/workflows/checks.yml@<sha> # vX.Y.Z
 #
 # Job name: `checks`. Rulesets require it by name as `<caller job> / checks`, so the
 # caller above reports `checks / checks`. The name stays: renaming it leaves every
-# caller's `main` waiting for a check that never reports.
+# caller's `main` waiting for a check that never reports. The job has no `if:`, and
+# the caller's job should have no `if:` or `needs:` either, so the required check
+# always runs (tests/test_checks_workflow.py).
 #
 # pre-commit itself (hash-pinned in .github/requirements-ci.txt) and the gitleaks
 # hook for the PR's commits (in .pre-commit-config.yaml) come from this repository
@@ -58,12 +59,6 @@ on:
           dependency graph, which public repositories have by default.
         type: boolean
         default: true
-      tests-weakened:
-        description: >-
-          Whether the caller's test guard found the PR weakening a test. When true,
-          the PR's description needs a line `Tests weakened: <reason>`.
-        type: boolean
-        default: false
 
 # Nothing by default; the job asks for what it uses.
 permissions: {}
@@ -74,7 +69,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read # the weakened-tests check reads the PR's description
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,28 +103,15 @@ jobs:
           fi
           echo "PR title: '$PR_TITLE'"
 
-      # A PR that deletes, skips or loosens tests says why, in a line
-      # `Tests weakened: <reason>` in its description. The caller's own guard decides
-      # whether tests were weakened, since that depends on the language. The
-      # description is fetched when this runs, so a re-run sees an edit, and it is
-      # never expanded into the script.
-      - name: Weakened tests need a reason
-        if: github.event_name == 'pull_request' && inputs.tests-weakened
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          body=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' | tr -d '\r')
-          if ! grep -Eq '^[[:space:]]*Tests weakened:[[:space:]]*[^[:space:]].{9,}' <<<"$body"; then
-            echo "::error::This PR weakens tests: its description needs a line 'Tests weakened: <which test and why>', of at least 10 characters."
-            exit 1
-          fi
-          grep -E '^[[:space:]]*Tests weakened:' <<<"$body" >> "$GITHUB_STEP_SUMMARY"
-
       # What the PR changes in the dependency manifests and lock files, and in the
       # actions its workflows use: fails on a known vulnerability of moderate
-      # severity or above, or a licence outside v1's list. Dev packages count too:
-      # they run in CI with a token.
+      # severity or above, or a licence outside the list. Dev packages count too:
+      # they run in CI with a token. The list is v1's plus GPL-3.0, the project's own
+      # licence. A few Go tool dependencies carry a notice outside it (CC-BY-3.0 in
+      # structtag, OFL-1.1 in chroma, Go's PATENTS grant in golang.org/x); the
+      # action can only exempt a package from the licence check by its exact name,
+      # so those are listed one by one and the notices stay off the global list.
+      # The vulnerability check still covers them.
       - name: Dependency review
         if: github.event_name == 'pull_request' && inputs.dependency-review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -139,8 +120,20 @@ jobs:
           fail-on-scopes: runtime, development, unknown
           allow-licenses: >-
             0BSD, Apache-2.0, BlueOak-1.0.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0,
-            GPL-3.0-only, GPL-3.0-or-later, ISC, LGPL-3.0-only, LGPL-3.0-or-later,
-            MIT, MIT-0, MPL-2.0, PSF-2.0, Python-2.0, Unlicense, Zlib
+            GPL-3.0, GPL-3.0-only, GPL-3.0-or-later, ISC, LGPL-3.0-only,
+            LGPL-3.0-or-later, MIT, MIT-0, MPL-2.0, PSF-2.0, Python-2.0, Unlicense,
+            Zlib
+          allow-dependencies-licenses: >-
+            pkg:golang/github.com/fatih/structtag,
+            pkg:golang/github.com/alfatraining/structtag,
+            pkg:golang/github.com/alecthomas/chroma,
+            pkg:golang/github.com/alecthomas/chroma/v2,
+            pkg:golang/golang.org/x/crypto, pkg:golang/golang.org/x/exp,
+            pkg:golang/golang.org/x/mod, pkg:golang/golang.org/x/net,
+            pkg:golang/golang.org/x/sync, pkg:golang/golang.org/x/sys,
+            pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
+            pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
+            pkg:golang/golang.org/x/vuln
           show-openssf-scorecard: true
           comment-summary-in-pr: never
 

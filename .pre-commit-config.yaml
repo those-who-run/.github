@@ -1,7 +1,8 @@
 # The checks a commit meets before it is made: `pre-commit install` sets them up, CI's
 # `checks` job (.github/workflows/checks.yml) runs them on every file, and
-# .claude/hooks/guard.py stops an agent from skipping them. They come from v1's .pre-commit-config.yaml, without its Python and
-# web hooks, plus shellcheck for scripts/.
+# .claude/hooks/guard.py stops an agent from skipping them. They come from v1's
+# .pre-commit-config.yaml, without its Python and web hooks, plus shellcheck for
+# scripts/.
 #
 # The external hooks are pinned to a commit SHA, the tag in the `frozen:` comment;
 # Dependabot bumps them (.github/dependabot.yml). The `hook-pins` hook below checks
