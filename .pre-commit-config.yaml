@@ -1,0 +1,91 @@
+# The checks a commit meets before it is made: `pre-commit install` sets them up, CI's
+# `test` job runs them on every file, and .claude/hooks/guard.py stops an agent from
+# skipping them. They come from v1's .pre-commit-config.yaml, without its Python and
+# web hooks, plus shellcheck for scripts/.
+#
+# The external hooks are pinned to a commit SHA, the tag in the `frozen:` comment;
+# Dependabot bumps them (.github/dependabot.yml). The `hook-pins` hook below checks
+# this, so a hand edit to `rev: vX.Y.Z` fails.
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit, manual]
+# release-please writes the changelog; nobody edits it by hand.
+exclude: ^CHANGELOG\.md$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # The copies Claude Code runs here must be the canonical files in agent/, or the
+  # tests in agent/tests would pass while a different guard runs in this repository.
+  - repo: local
+    hooks:
+      - id: guard-copy
+        name: .claude/ matches agent/ (guard.py and settings.json)
+        entry: sh -c 'cmp agent/guard.py .claude/hooks/guard.py && cmp agent/settings.json .claude/settings.json'
+        language: system
+        files: ^(agent/(guard\.py|settings\.json)|\.claude/(hooks/guard\.py|settings\.json))$
+        pass_filenames: false
+      # Every external hook below is pinned to a commit SHA with a `frozen:` comment
+      # (tests/test_precommit_config.py, which CI's `test` job also runs).
+      - id: hook-pins
+        name: external hooks pinned to a commit SHA (frozen)
+        entry: python3 -m unittest discover tests
+        language: system
+        files: ^(\.pre-commit-config\.yaml|tests/.*\.py)$
+        pass_filenames: false
+
+  # gitleaks: the staged changes, before they are committed. In `--all-files` runs
+  # (CI) there is nothing staged, so it scans nothing there; gitleaks-pr does that
+  # job in CI: every commit from HEAD's first parent to HEAD, which on a PR's merge
+  # commit is every commit in the PR, even one made with --no-verify or on the web.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+      - id: gitleaks
+        alias: gitleaks-pr
+        name: gitleaks (the commits after HEAD^1)
+        entry: gitleaks git --redact --verbose --log-opts=HEAD^1..HEAD
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+
+  # The workflows: actionlint for syntax and expressions, zizmor for the security
+  # audits that need no network, among them that every action is pinned by SHA.
+  # actionlint's shellcheck and pyflakes are off, so a run gives the same answer on a
+  # laptop without them as in CI.
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+        args: [-shellcheck=, -pyflakes=]
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: fa412071e4f5d44d44f9e365f4676f9df92456a2  # frozen: v1.30.1
+    hooks:
+      - id: zizmor
+        args: [--no-progress, --offline, --min-severity=medium]
+
+  # scripts/*.sh run with the maintainer's admin token, so they get a linter too.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  # The commit message: a conventional commit with one of release-please's types
+  # (release-please-config.json). CI checks a PR's title, the squash commit's
+  # subject, with the same hook.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: 91ab4bf57e58b32adf1a122681f6ebe164d081c8  # frozen: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          [feat, fix, perf, revert, deps, docs, refactor, test, build, ci, chore, style]

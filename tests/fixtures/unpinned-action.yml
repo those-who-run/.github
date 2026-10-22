@@ -1,0 +1,19 @@
+# A workflow that must fail the checks: its action is pinned by tag, not by SHA. CI's
+# `test` job copies it into .github/workflows and expects zizmor to reject it, so a
+# change that stops zizmor catching unpinned actions fails `test`. It lives here,
+# outside .github/workflows, so it never runs and the normal hook run skips it.
+name: Unpinned
+
+on: push
+
+permissions: {}
+
+jobs:
+  unpinned:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
