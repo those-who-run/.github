@@ -12,7 +12,9 @@ auto-merge too, and no step may use an action that arms auto-merge. Standard lib
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -210,6 +212,48 @@ class ReleaseIsDispatchedOnTheTag(unittest.TestCase):
             "    uses: ./.github/workflows/release.yml\n"
         )
         self.assertTrue(release_dispatch(text))
+
+
+CHECKOUT_OWN = "repository: ${{ job.workflow_repository }}"
+
+
+def own_checkout(workflow: str) -> list[str]:
+    """What is missing before the digest checks out this repository's script: a step
+    that stops the job when job.workflow_repository or job.workflow_sha is empty."""
+    block = job(workflow, "digest")
+    if CHECKOUT_OWN not in block:
+        return ["the digest doesn't check out its script from this repository"]
+    before = block[: block.index(CHECKOUT_OWN)]
+    checks = [s for s in run_scripts(before) if "WORKFLOW_REPOSITORY" in s and "WORKFLOW_SHA" in s]
+    if not checks:
+        return ["no step stops the job when job.workflow_repository or job.workflow_sha is empty"]
+    return []
+
+
+def run_check(script: str, repository: str, sha: str) -> int:
+    env = {"PATH": os.environ.get("PATH", ""), "WORKFLOW_REPOSITORY": repository, "WORKFLOW_SHA": sha}
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True).returncode
+
+
+class TheDigestFailsClosed(unittest.TestCase):
+    def test_the_workflow(self):
+        self.assertEqual(own_checkout(WORKFLOW.read_text()), [])
+
+    def test_the_check_fails_on_an_empty_property(self):
+        before = job(WORKFLOW.read_text(), "digest").split(CHECKOUT_OWN)[0]
+        (script,) = [s for s in run_scripts(before) if "WORKFLOW_SHA" in s]
+        self.assertEqual(run_check(script, "those-who-run/.github", "abc123"), 0)
+        self.assertNotEqual(run_check(script, "", "abc123"), 0)
+        self.assertNotEqual(run_check(script, "those-who-run/.github", ""), 0)
+
+    def test_a_workflow_without_the_check_fails(self):
+        text = WORKFLOW.read_text()
+        start = text.index("      - name: The commit this workflow runs from")
+        end = text.index("      - if:", start)
+        self.assertEqual(
+            own_checkout(text[:start] + text[end:]),
+            ["no step stops the job when job.workflow_repository or job.workflow_sha is empty"],
+        )
 
 
 if __name__ == "__main__":

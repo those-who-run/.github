@@ -206,16 +206,30 @@ last release, so the digest lists, with the PRs that made each change:
 - workflows and GitHub configuration: anything under `.github/`;
 - agent policy: `.claude/`, `AGENTS.md`, `CLAUDE.md`;
 - code owners: `CODEOWNERS`, wherever it is;
+- test, coverage and budget configuration, whatever changed in it:
+  `conftest.py`, `pytest.ini`, `tox.ini`, `.coveragerc`, `codecov.yml`, the jest,
+  vitest, playwright, karma and mocha configs, `bundle-budget.json`;
 - build and release files: `Makefile`, `Dockerfile`, release-please's config,
   `.pre-commit-config.yaml`, the toolchain version files;
+- coverage floors and budgets whose value changed, with the old and new values:
+  Go's `coverage-floor:` input in a workflow, `fail_under` (`pyproject.toml`,
+  `setup.cfg`, `.coveragerc`, `tox.ini`) and `--cov-fail-under`, jest and vitest
+  coverage thresholds (`jest.config.*`, `vitest.config.*`, `vite.config.*`,
+  `package.json`'s `jest.coverageThreshold`), and every number in a
+  `bundle-budget.json` at any depth;
 - weakened tests: test files deleted or renamed out of the test files, tests
-  removed (Go, Python, JavaScript and TypeScript), skips and expected failures
-  added;
+  removed (Go, Python, JavaScript and TypeScript, Ruby's RSpec), skips and
+  expected failures added (those, and Rust's `#[ignore]` in `tests/*.rs`). A
+  test is matched by its file and name, so a test moved to another file shows as
+  removed. Playwright's conditional `test.skip(<condition>, "<reason>")` inside a
+  block skips by design and is left out, as in v1; an unconditional skip is
+  listed;
 - anything under `watched-paths`.
 
 It covers the last `vX.Y.Z` tag (not a pre-release) to the default branch's head.
-It reads git history and runs nothing from it. To see it locally, from a
-repository's root:
+It reads git history and runs nothing from it. A digest longer than GitHub's
+comment limit is cut short, with a note of how many entries are left out. To see
+it in full locally, from a repository's root:
 
 ```sh
 python3 path/to/.github/scripts/release_digest.py [v0.1.0..main] [--watch scripts/]
@@ -258,13 +272,18 @@ The calling job grants the ceiling and each reusable job narrows it.
 
 Publishing runs in the caller's release workflow (`release.yml`), which
 `release-please.yml` dispatches on the new tag. Its run is on the tag itself, so
-`github.ref` is `refs/tags/vX.Y.Z`: a check that the ref is a release tag passes,
-and a `release` environment limited to `v*` tags lets its jobs in. A workflow
-called directly from the release PR's run would see that run's ref, `main`, and be
-refused by both. A tag made with the `GITHUB_TOKEN` starts no workflow by its push,
-but a dispatch made with that token does, so no other token is needed.
+`github.ref` is `refs/tags/vX.Y.Z`. A workflow called directly from the release
+PR's run would see that run's ref, `main`. A tag made with the `GITHUB_TOKEN`
+starts no workflow by its push, but a dispatch made with that token does, so no
+other token is needed.
 
-The release workflow calls `image.yml` with `push: true` from that run:
+`release.yml` is `on: workflow_dispatch`, so anyone with write access can also
+dispatch it, on `main` or any branch. So every job that publishes needs both of
+these, whatever it runs:
+
+- a check that the ref is a release tag, which fails the run otherwise;
+- `environment: release`, an environment limited to `v*` tags with the maintainer
+  as required reviewer.
 
 ```yaml
 name: Release
@@ -275,17 +294,31 @@ on:
 permissions: {}
 
 jobs:
-  image:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: those-who-run/.github/.github/workflows/image.yml@<sha> # vX.Y.Z
-    with:
-      push: true
-      smoke: docker run --rm "$IMAGE" --version
+    steps:
+      - name: Only a release tag publishes
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if ! [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$REF is not a release tag"
+            exit 1
+          fi
+      - uses: actions/checkout@<sha> # vX.Y.Z
+        with:
+          persist-credentials: false
+      - run: make publish # or whatever publishes
 ```
+
+Where the release workflow calls a reusable publishing workflow instead, the
+check and the environment belong on that workflow's publishing jobs, since a
+calling job can't set an environment. Check that the publishing workflow you call
+has both. A caller that publishes any other way (a GoReleaser job, a package
+upload) adds both itself.
 
 The outputs (`release_created`, `tag_name`, `version`) stay for anything else the
 release PR's run does on a release.

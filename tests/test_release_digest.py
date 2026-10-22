@@ -112,6 +112,13 @@ class Categories(unittest.TestCase):
             ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"],
             ["docs/CODEOWNERS.md", "codeowners.txt"],
         ),
+        "Test, coverage and budget configuration": (
+            ["conftest.py", "tests/conftest.py", "pytest.ini", "tox.ini", ".coveragerc",
+             "codecov.yml", ".github/codecov.yml", "web/jest.config.js", "vitest.config.ts",
+             "web/playwright.config.ts", "karma.conf.js", ".mocharc.yml", ".mocharc",
+             "web/bundle-budget.json"],
+            ["docs/conftest.md", "pytest.ini.md", "src/jest.ts", "budget.json"],
+        ),
         "Build and release files": (
             ["Makefile", "Dockerfile", "web/Dockerfile.dev", "build/rules.mk",
              "release-please-config.json", ".release-please-manifest.json",
@@ -270,14 +277,53 @@ class WeakenedTests(Base):
         self.assertIn("`tests/test_t.py`: test removed: `test_two`", found)
         self.assertIn("`web/add.test.ts`: test removed: `subtracts`", found)
 
-    def test_near_miss_a_test_moved_to_another_file(self):
+    def test_a_test_moved_to_another_file_is_listed(self):
+        # Matched by file and name, so a move shows as a removal; a look at the PR
+        # tells it from a lost test.
         r = self.base()
         r.commit(
-            "refactor: split",
+            "refactor: split (#9)",
             {
                 "x/add_test.go": GO_TEST.replace("func TestSub(t *testing.T) {}\n", ""),
                 "x/sub_test.go": 'package x\n\nimport "testing"\n\nfunc TestSub(t *testing.T) {}\n',
             },
+        )
+        self.assertEqual(self.weakened(r), "`x/add_test.go`: test removed: `TestSub`")
+
+    def test_a_removed_test_is_not_hidden_by_one_of_the_same_name_elsewhere(self):
+        r = self.repo(
+            {
+                "a/test_x.py": "def test_parse():\n    assert True\n",
+                "b/test_y.py": "def test_other():\n    assert True\n",
+            }
+        )
+        r.commit(
+            "test: shuffle (#10)",
+            {
+                "a/test_x.py": "def test_kept():\n    assert True\n",
+                "b/test_y.py": "def test_other():\n    assert True\n\n\n"
+                "def test_parse():\n    assert 1\n",
+            },
+        )
+        self.assertEqual(self.weakened(r), "`a/test_x.py`: test removed: `test_parse`")
+
+    def test_a_skip_added_is_not_hidden_by_the_same_line_removed_elsewhere(self):
+        skipped = 'func TestA(t *testing.T) {\n\tt.Skip("slow")\n}\n'
+        r = self.repo({"a_test.go": skipped, "b_test.go": "func TestB(t *testing.T) {\n}\n"})
+        r.commit(
+            "test: swap (#11)",
+            {
+                "a_test.go": "func TestA(t *testing.T) {\n}\n",
+                "b_test.go": 'func TestB(t *testing.T) {\n\tt.Skip("slow")\n}\n',
+            },
+        )
+        self.assertIn("`b_test.go`: skip or expected failure added", self.weakened(r))
+
+    def test_near_miss_a_renamed_test_file_keeps_its_tests(self):
+        r = self.base()
+        r.commit(
+            "refactor: rename",
+            {"x/add_test.go": None, "x/sum_test.go": GO_TEST.replace("1, 1) != 2", "2, 2) != 4")},
         )
         self.assertEqual(self.weakened(r), "")
 
@@ -322,6 +368,174 @@ class WeakenedTests(Base):
         self.assertEqual(self.weakened(r), "")
 
 
+    def test_a_rust_ignore_in_an_integration_test(self):
+        r = self.repo({"tests/it.rs": "#[test]\nfn works() {}\n"})
+        r.commit("test: later (#12)", {"tests/it.rs": '#[test]\n#[ignore = "slow"]\nfn works() {}\n'})
+        self.assertIn('`tests/it.rs`: skip or expected failure added: `#[ignore = "slow"]`', self.weakened(r))
+
+    def test_ruby_a_removed_example_and_an_xit(self):
+        spec = 'describe "x" do\n  it "adds" do\n  end\n\n  it "subtracts" do\n  end\nend\n'
+        r = self.repo({"spec/x_spec.rb": spec})
+        r.commit(
+            "test: fewer (#13)",
+            {"spec/x_spec.rb": 'describe "x" do\n  xit "adds" do\n  end\nend\n'},
+        )
+        text = self.weakened(r)
+        self.assertIn("`spec/x_spec.rb`: test removed: `subtracts`", text)
+        self.assertIn("`spec/x_spec.rb`: skip or expected failure added: `xit \"adds\" do`", text)
+
+    def test_near_miss_a_skip_in_a_comment(self):
+        r = self.base()
+        r.commit(
+            "docs: a comment",
+            {
+                "tests/test_t.py": PY_TEST + "# Use @pytest.mark.skip only with a reason.\n",
+                "web/add.test.ts": JS_TEST + "// it.skip(...) needs an issue\n",
+            },
+        )
+        self.assertEqual(self.weakened(r), "")
+
+
+TS_TESTS = 'test("works", () => {});\n'
+
+
+class ConditionalSkips(Base):
+    """Playwright's conditional test.skip inside a block skips by design (v1's #373)."""
+
+    def change(self, added: str) -> str:
+        r = self.repo({"web/a.test.ts": TS_TESTS})
+        r.commit("test: skips (#14)", {"web/a.test.ts": TS_TESTS + added})
+        return flagged(r.digest(), "Tests weakened")
+
+    def test_a_conditional_skip_in_a_body_is_not_listed(self):
+        body = (
+            'test("drags", async ({ page }, testInfo) => {\n'
+            '  test.skip(testInfo.project.name !== "phone", "touch: the phone project");\n'
+            "  test.skip(!process.env.LIVE, 'needs the live source');\n"
+            "  test.fixme(isWebKit, 'webkit drag');\n"
+            "});\n"
+        )
+        self.assertEqual(self.change(body), "")
+
+    def test_an_unconditional_skip_is_listed(self):
+        for line in (
+            '  test.skip(true, "always skipped");',  # a condition that is always true
+            'test.skip(isPhone, "at the top level");',  # not inside a block
+            '  test.skip("a title", async () => {});',  # a title: the test is skipped
+            "  test.skip();",  # bare
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(
+                    self.change(line + "\n"),
+                    f"`web/a.test.ts`: skip or expected failure added: {release_digest.code(line.strip())}",
+                )
+
+
+class Limits(Base):
+    """A coverage floor or budget that changes value shows old and new."""
+
+    def limits(self, before: dict[str, str], after: dict[str, str]) -> str:
+        r = self.repo(before)
+        r.commit("chore: lower it (#15)", after)
+        return flagged(r.digest(), "Coverage floors and budgets")
+
+    def test_each_kind_shows_old_and_new(self):
+        cases = {
+            "go coverage-floor": (
+                ".github/workflows/ci.yml",
+                "jobs:\n  go:\n    with:\n      coverage-floor: 80\n",
+                "jobs:\n  go:\n    with:\n      coverage-floor: 70\n",
+                "`coverage-floor` 80 -> 70",
+            ),
+            "pyproject.toml": (
+                "pyproject.toml",
+                "[tool.coverage.report]\nfail_under = 90\n",
+                "[tool.coverage.report]\nfail_under = 85\n",
+                "`fail_under` 90 -> 85",
+            ),
+            "setup.cfg": (
+                "setup.cfg",
+                "[coverage:report]\nfail_under = 90\n",
+                "[coverage:report]\nfail_under = 60\n",
+                "`fail_under` 90 -> 60",
+            ),
+            ".coveragerc": (
+                ".coveragerc",
+                "[report]\nfail_under = 80\n",
+                "[report]\nfail_under = 10\n",
+                "`fail_under` 80 -> 10",
+            ),
+            "tox.ini": (
+                "tox.ini",
+                "[coverage:report]\nfail_under = 75\n",
+                "[coverage:report]\nfail_under = 50\n",
+                "`fail_under` 75 -> 50",
+            ),
+            "pytest.ini": (
+                "pytest.ini",
+                "[pytest]\naddopts = --cov --cov-fail-under=95\n",
+                "[pytest]\naddopts = --cov\n",
+                "`--cov-fail-under` 95 -> unset",
+            ),
+            "jest.config.js": (
+                "web/jest.config.js",
+                "module.exports = {\n  coverageThreshold: { global: { lines: 90, branches: 80 } },\n};\n",
+                "module.exports = {\n  coverageThreshold: { global: { lines: 70, branches: 80 } },\n};\n",
+                "`lines` 90 -> 70",
+            ),
+            "package.json": (
+                "package.json",
+                '{"jest": {"coverageThreshold": {"global": {"statements": 90}}}}\n',
+                '{"jest": {"coverageThreshold": {"global": {"statements": 50}}}}\n',
+                "`coverageThreshold/global/statements` 90 -> 50",
+            ),
+            "vitest.config.ts": (
+                "vitest.config.ts",
+                "export default {\n  test: { coverage: { thresholds: { functions: 85 } } },\n};\n",
+                "export default {\n  test: { coverage: { thresholds: { functions: 40 } } },\n};\n",
+                "`functions` 85 -> 40",
+            ),
+            "bundle-budget.json": (
+                "web/bundle-budget.json",
+                '{"entry": 118955, "routes": {"src/a.tsx": 5000}}\n',
+                '{"entry": 150000, "routes": {"src/a.tsx": 5000}}\n',
+                "`entry` 118955 -> 150000",
+            ),
+        }
+        for kind, (path, before, after, change) in cases.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    self.limits({path: before}, {path: after}), f"`{path}`: {change}"
+                )
+
+    def test_near_miss_a_file_changed_with_its_floor_kept(self):
+        before = "[tool.coverage.report]\nfail_under = 90\n"
+        self.assertEqual(
+            self.limits({"pyproject.toml": before}, {"pyproject.toml": before + "show_missing = true\n"}),
+            "",
+        )
+
+    def test_a_new_floor_and_a_removed_one(self):
+        self.assertEqual(
+            self.limits({"README.md": "x\n"}, {".coveragerc": "[report]\nfail_under = 80\n"}),
+            "`.coveragerc`: `fail_under` unset -> 80",
+        )
+
+    def test_the_test_configuration_is_listed_whatever_changed(self):
+        r = self.repo({"README.md": "x\n"})
+        r.commit("test: collect less (#16)", {"conftest.py": 'collect_ignore = ["b"]\n'})
+        r.commit("ci: codecov (#17)", {"codecov.yml": "coverage:\n  status: off\n"})
+        r.commit("test: playwright (#18)", {"web/playwright.config.ts": "export default {};\n"})
+        self.assertEqual(
+            r.digest().sections["Test, coverage and budget configuration"],
+            [
+                ("A `codecov.yml`", ["#17"]),
+                ("A `conftest.py`", ["#16"]),
+                ("A `web/playwright.config.ts`", ["#18"]),
+            ],
+        )
+
+
 class Markdown(Base):
     def test_sections_in_order_and_names_as_code(self):
         r = self.repo({"README.md": "hi\n"})
@@ -332,6 +546,40 @@ class Markdown(Base):
         # A backtick in a name can't close the code span.
         self.assertIn("`.github/workflows/a'b.yml`", text)
         self.assertIn("Read the list below before you merge", text)
+
+
+    def test_a_long_digest_is_truncated_under_githubs_limit(self):
+        d = release_digest.Digest("v0.1.0", "HEAD")
+        for i in range(3000):
+            d.add("Dependencies", release_digest.code(f"svc{i:04}/" + "x" * 40 + "/go.sum"), ["#1"])
+        text = release_digest.markdown(d)
+        self.assertLess(len(text), 65_536)
+        self.assertIn("**Truncated:**", text)
+        shown = text.count("\n- ")
+        self.assertIn(f"{3000 - shown} more entries are not shown", text)
+        self.assertTrue(text.startswith(release_digest.MARKER))
+
+    def test_a_short_digest_is_not_truncated(self):
+        d = release_digest.Digest("v0.1.0", "HEAD")
+        d.add("Dependencies", "`go.sum`", ["#1"])
+        self.assertNotIn("Truncated", release_digest.markdown(d))
+
+
+class Batching(Base):
+    def test_one_git_log_for_the_changed_files(self):
+        r = self.repo({f"f{i}.txt": "x\n" for i in range(20)})
+        r.commit("chore: many (#2)", {f"f{i}.txt": "y\n" for i in range(20)} | {"go.mod": "module x\n"})
+        calls = []
+        real = release_digest._git
+
+        def counting(*args, **kwargs):
+            calls.append(args)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(release_digest, "_git", counting):
+            d = r.digest()
+        self.assertEqual(d.sections["Dependencies"], [("A `go.mod`", ["#2"])])
+        self.assertEqual(sum(1 for a in calls if a[0] == "log"), 1)
 
 
 class Range(Base):

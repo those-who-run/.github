@@ -121,7 +121,19 @@ jobs:
           persist-credentials: false
           fetch-depth: 0 # the history and tags since the last release
       # The script from this repository at the commit the caller pinned, so every
-      # repository runs the same digest and none keeps a copy.
+      # repository runs the same digest and none keeps a copy. With either property
+      # empty, checkout would fall back to the caller's repository at its default
+      # branch without a word, so the job stops first.
+      - name: The commit this workflow runs from
+        if: steps.pr.outputs.number != ''
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty, so the digest script can't be checked out at the pinned commit"
+            exit 1
+          fi
       - if: steps.pr.outputs.number != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
