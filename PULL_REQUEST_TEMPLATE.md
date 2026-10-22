@@ -15,5 +15,5 @@ New direct dependencies: none <!-- or each one, with the reason for it -->
 
 <!-- If a test was deleted, skipped or loosened, add a line that starts with `Tests weakened:` and says which test and why. Leave it out otherwise. -->
 
-Closes those-who-run/paddock#
+Closes those-who-run/paddock#N.
 <!-- Only when every acceptance criterion is met. Otherwise: Part of those-who-run/paddock#N (which criteria are left, and why). -->
