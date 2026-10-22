@@ -1,0 +1,2 @@
+# golangci-lint's standard linters; a repository's own config can add more.
+version: "2"

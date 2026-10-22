@@ -1,9 +1,9 @@
 name: CI
 
-# Two jobs, required by name: `test`, this repository's own tests, and
+# Two jobs are required by name: `test`, this repository's own tests, and
 # `checks / checks`, the language-neutral checks every repository runs, from
 # checks.yml in this repository. Renaming either leaves `main` waiting for a check
-# that never reports.
+# that never reports. The other two, `go-fixture` and `go-check-cases`, test go.yml.
 on:
   pull_request:
   push:
@@ -93,3 +93,30 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/checks.yml
+
+  # go.yml (#15) on a small module that passes it, so the reusable workflow is run
+  # where it lives. Not a required check here: this repository has no Go of its own.
+  go-fixture:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/go.yml
+    with:
+      working-directory: tests/go/fixture
+
+  # The same module broken one way at a time: each of go.yml's checks fails for its
+  # own reason (tests/go/test_go_check.py).
+  go-check-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tests/go/fixture/go.mod
+          cache-dependency-path: tests/go/fixture/**/go.sum
+      - name: go.yml's checks fail on a broken module
+        run: python3 -m unittest discover -s tests/go -v

@@ -37,7 +37,9 @@ class CiWorkflow(unittest.TestCase):
         )
 
     def test_required_jobs_always_run(self) -> None:
-        self.assertEqual(set(self.jobs), {"test", "checks"})
+        # `test` and `checks` are the required jobs; `go-fixture` and `go-check-cases`
+        # test go.yml. A new job means changing this list.
+        self.assertEqual(set(self.jobs), {"test", "checks", "go-fixture", "go-check-cases"})
         for name, job in self.jobs.items():
             with self.subTest(job=name):
                 self.assertNotIn("if", job["keys"])
