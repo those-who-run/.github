@@ -14,13 +14,12 @@ name: Release PR
 # Tokens: release-please uses the GITHUB_TOKEN, so no PAT or App key with write
 # access to this repository is needed. For that token to open the release PR, the
 # repository needs "Allow GitHub Actions to create and approve pull requests" on.
-# That one setting also lets a workflow's token approve a PR, so it is turned on by
-# hand only after `main`'s ruleset requires code-owner review
-# (scripts/protect-repo.sh --code-owners): then only a code owner's approval counts
+# That one setting also lets a workflow's token approve a PR, so
+# scripts/protect-repo.sh turns it on (--actions-prs) only together with code-owner
+# review (--code-owners): then only a code owner's approval counts
 # (.github/CODEOWNERS, read from the base branch), and neither github-actions[bot]
-# nor an agent's bot account is one. protect-repo.sh turns the setting off again
-# whenever it runs. A PR that token opens starts no workflow, so the release-pr job
-# dispatches CI on the release branch for its required check.
+# nor an agent's bot account is one. A PR that token opens starts no workflow, so
+# the release-pr job dispatches CI on the release branch for its required check.
 #
 # Who merges: the maintainer, by hand. Never auto-merge: armed here, the merge would
 # be the GITHUB_TOKEN's push, which starts no workflow, so the release would never be

@@ -4,7 +4,7 @@
 # what an organisation ruleset would do on GitHub Team. Safe to run again: it
 # updates the rulesets it made before instead of adding new ones.
 #
-#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--approvals N] [--code-owners] [--no-actions]
+#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--approvals N] [--code-owners [--actions-prs]] [--no-actions]
 #
 # --checks   status checks `main` must pass (from GitHub Actions only). Leave it
 #            out for a repo with no CI; `main` still needs a pull request.
@@ -18,24 +18,31 @@
 #               "Allow GitHub Actions to create and approve pull requests" is to be
 #               turned on, for release-please: an approval by github-actions[bot] or
 #               an agent's bot account then counts for nothing, since neither is a
-#               code owner. This script never turns that setting on, and turns it off
-#               each time it runs; the maintainer turns it on by hand afterwards.
+#               code owner.
+# --actions-prs turn "Allow GitHub Actions to create and approve pull requests" on,
+#               so release-please can open its PR (default off: each run turns it
+#               off). Only with --code-owners: with the setting on, a workflow's
+#               token can approve a PR, and code-owner review is what stops that
+#               approval counting. Record it for every repo that uses release-please,
+#               or a later run turns the setting off again.
 # --no-actions  turn Actions off (repos with no workflows, like outings).
 #
 # Needs: gh, logged in as an admin of the repository.
 set -euo pipefail
 
-repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--approvals N] [--code-owners] [--no-actions]}
+repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--approvals N] [--code-owners [--actions-prs]] [--no-actions]}
 shift
 checks=""
 approvals=0
 code_owners=false
+actions_prs=false
 actions=on
 while [ $# -gt 0 ]; do
   case "$1" in
     --checks) checks=$2; shift 2 ;;
     --approvals) approvals=$2; shift 2 ;;
     --code-owners) code_owners=true; shift ;;
+    --actions-prs) actions_prs=true; shift ;;
     --no-actions) actions=off; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -44,6 +51,16 @@ done
 case "$approvals" in
   ''|*[!0-9]*) echo "--approvals takes a number: $approvals" >&2; exit 2 ;;
 esac
+# Checked before anything changes, so a refused run leaves the repo as it was.
+if [ "$actions_prs" = true ] && [ "$code_owners" != true ]; then
+  echo "--actions-prs needs --code-owners: with Actions allowed to approve PRs, only" >&2
+  echo "code-owner review stops a workflow's token approving one" >&2
+  exit 2
+fi
+if [ "$actions_prs" = true ] && [ "$actions" = off ]; then
+  echo "--actions-prs and --no-actions contradict each other" >&2
+  exit 2
+fi
 # With reviews required, an approval is dropped by a later push and must come after it.
 fresh_review=$([ "$approvals" -gt 0 ] && echo true || echo false)
 
@@ -105,7 +122,8 @@ gh api -X PUT "repos/$repo/private-vulnerability-reporting" >/dev/null
 say "secret scanning, push protection, Dependabot alerts, private vulnerability reporting on"
 
 # Actions: GitHub's actions plus the ones we use, pinned by SHA; a read-only token
-# that can't approve PRs; outside contributors' PRs wait for approval.
+# that can approve PRs only with --actions-prs; outside contributors' PRs wait for
+# approval.
 if [ "$actions" = off ]; then
   gh api -X PUT "repos/$repo/actions/permissions" -F enabled=false >/dev/null
   say "Actions off"
@@ -114,9 +132,9 @@ else
   gh api -X PUT "repos/$repo/actions/permissions/selected-actions" --input - >/dev/null <<'EOF2'
 {"github_owned_allowed":true,"verified_allowed":false,"patterns_allowed":["astral-sh/setup-uv@*","docker/*","dependabot/fetch-metadata@*","googleapis/release-please-action@*"]}
 EOF2
-  gh api -X PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false >/dev/null
+  gh api -X PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=$actions_prs >/dev/null
   if [ "$(gh api "repos/$repo" --jq .private)" = false ]; then
     gh api -X PUT "repos/$repo/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null
   fi
-  say "Actions: selected actions, SHA pinning, read-only token, fork PRs need approval"
+  say "Actions: selected actions, SHA pinning, read-only token (approves PRs: $actions_prs), fork PRs need approval"
 fi
