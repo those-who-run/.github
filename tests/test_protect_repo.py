@@ -4,7 +4,8 @@ that keeps a pretend GitHub's settings in a JSON file, so nothing reaches GitHub
 The stub answers the reads the script makes in the shapes GitHub's REST API returns
 them, applies its writes, and logs every call. That is enough to see what a run would
 send, that a second run changes nothing, and that --check reports a difference
-without writing anything.
+without writing anything. Lists come back in pages of PAGE, as GitHub's do (30 to a
+page there), so a read that doesn't paginate misses what is on a later page.
 """
 
 from __future__ import annotations
@@ -21,9 +22,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "protect-repo.sh"
 LIST = ROOT / "scripts" / "repos.json"
 MAINTAINER_ID = 1001
+PAGE = 2
 
 STUB = r'''
-import json, os, re, sys
+import base64, json, os, re, sys
+
+PAGE = %d
 
 state_path, log_path = os.environ["GH_STATE"], os.environ["GH_CALLS"]
 state = json.load(open(state_path))
@@ -35,6 +39,8 @@ while i < len(args):
     a = args[i]
     if a == "-X":
         call["method"] = args[i + 1]; i += 2
+    elif a == "--paginate":
+        call["paginate"] = True; i += 1
     elif a == "--input":
         call["input"] = json.loads(sys.stdin.read()); i += 2
     elif a in ("-f", "-F"):
@@ -67,6 +73,18 @@ if not m or m[1] not in state["repos"]:
     done(status=404)
 r, rest = state["repos"][m[1]], m[2] or ""
 
+def done_pages(items, page_body=lambda page: page):
+    # gh --paginate prints each page's JSON one after another; without it, only the first.
+    pages = [items[n:n + PAGE] for n in range(0, len(items), PAGE)] or [[]]
+    if not call.get("paginate"):
+        pages = pages[:1]
+    with open(log_path, "a") as log:
+        log.write(json.dumps(call) + "\n")
+    json.dump(state, open(state_path, "w"))
+    for page in pages:
+        print(json.dumps(page_body(page)))
+    sys.exit(0)
+
 def next_id():
     state["next_id"] += 1
     return state["next_id"]
@@ -83,7 +101,7 @@ if rest == "":
     done({})
 if rest == "/rulesets":
     if method == "GET":
-        done([{"id": x["id"], "name": x["name"], "target": x["target"]} for x in r["_rulesets"]])
+        done_pages([{"id": x["id"], "name": x["name"], "target": x["target"]} for x in r["_rulesets"]])
     r["_rulesets"].append(dict(body, id=next_id()))
     done({})
 m = re.fullmatch(r"/rulesets/(\d+)", rest)
@@ -99,6 +117,9 @@ if m:
         for rule in shown["rules"]:
             if rule["type"] == "pull_request":
                 rule["parameters"]["required_reviewers"] = []
+        # GitHub shows the bypass list only to someone who may edit the ruleset.
+        if not r["permissions"].get("admin"):
+            del shown["bypass_actors"]
         done(shown)
     r["_rulesets"] = [x for x in r["_rulesets"] if x["id"] != int(m[1])] + [dict(body, id=int(m[1]))]
     done({})
@@ -122,8 +143,15 @@ if rest in simple:
     r[simple[rest]].update(body if body is not None else fields)
     done({})
 if rest == "/contents/.github/CODEOWNERS":
-    done({"name": "CODEOWNERS", "path": ".github/CODEOWNERS"} if r["_codeowners"] else None,
-         0 if r["_codeowners"] else 404)
+    text = r["_codeowners"]
+    if text is True:
+        text = "* @ciaranRoche\n"
+    if not text:
+        done(status=404)
+    # GitHub sends the file base64-encoded, wrapped at 60 characters.
+    encoded = base64.b64encode(text.encode()).decode()
+    done({"name": "CODEOWNERS", "path": ".github/CODEOWNERS", "encoding": "base64",
+          "content": "\n".join(encoded[n:n + 60] for n in range(0, len(encoded), 60)) + "\n"})
 if rest == "/environments/release":
     if method == "GET":
         env = r["_env"]
@@ -142,7 +170,7 @@ if rest == "/environments/release/deployment-branch-policies":
     if r["_env"] is None:
         done(status=404)
     if method == "GET":
-        done({"total_count": len(r["_policies"]), "branch_policies": r["_policies"]})
+        done_pages(r["_policies"], lambda page: {"total_count": len(r["_policies"]), "branch_policies": page})
     r["_policies"].append(dict(body, id=next_id())); done({})
 m = re.fullmatch(r"/environments/release/deployment-branch-policies/(\d+)", rest)
 if m and method == "DELETE":
@@ -154,7 +182,7 @@ if rest == "/code-scanning/default-setup":
     done({})
 call["unhandled"] = True
 done(status=404)
-'''
+''' % PAGE
 
 
 def fresh_repo(**overrides):
@@ -335,6 +363,10 @@ class ProtectRepo(unittest.TestCase):
             "tags must list at least one pattern": {"example/repo": entry(tags=[])},
             "without refs/tags/": {"example/repo": entry(tags=["refs/tags/v*"])},
             "codeql languages are": {"example/repo": entry(codeql=["golang"])},
+            # Not in what the default-setup PATCH accepts, so it fails here, not mid-run.
+            "codeql languages are actions,": {"example/repo": entry(codeql=["rust"])},
+            "prevent_self_review must be true or false": {"example/repo": entry(publishes=True, prevent_self_review="no")},
+            "prevent_self_review needs publishes": {"example/repo": entry(prevent_self_review=True)},
             "checks must be a list of names": {"example/repo": entry(checks="test lint")},
             "checks has a name twice": {"example/repo": entry(checks=["test", "test"])},
             "issues must be true or false": {"example/repo": entry(issues=None)},
@@ -442,7 +474,8 @@ class ProtectRepo(unittest.TestCase):
         self.assertEqual(run.code, 0, run.err)
         env = self.state["repos"]["example/repo"]["_env"]
         self.assertEqual(env["reviewers"], [{"type": "User", "id": MAINTAINER_ID}])
-        self.assertIs(env["prevent_self_review"], True)
+        # Off unless the list turns it on: with one reviewer it would block every release.
+        self.assertIs(env["prevent_self_review"], False)
         self.assertIs(env["can_admins_bypass"], False)
         self.assertEqual(env["deployment_branch_policy"],
                          {"protected_branches": False, "custom_branch_policies": True})
@@ -450,6 +483,39 @@ class ProtectRepo(unittest.TestCase):
         policies = sorted((p["type"], p["name"]) for p in self.state["repos"]["example/repo"]["_policies"])
         self.assertEqual(policies, [("branch", "main"), ("tag", "v*")])
         self.assertIn("release environment: unchanged", self.run_script("--all").out)
+
+    def test_prevent_self_review_follows_the_list(self):
+        for listed, want in (({}, False), ({"prevent_self_review": False}, False),
+                             ({"prevent_self_review": True}, True)):
+            with self.subTest(listed=listed):
+                self.write_list({"example/repo": entry(publishes=True, **listed)})
+                self.state["repos"]["example/repo"] = fresh_repo()
+                self.assertEqual(self.run_script("--all").code, 0)
+                self.assertIs(self.state["repos"]["example/repo"]["_env"]["prevent_self_review"], want)
+                again = self.run_script("--all")
+                self.assertEqual(again.writes, [])
+                self.assertIn("release environment: unchanged", again.out)
+                self.state["repos"]["example/repo"]["_env"]["prevent_self_review"] = not want
+                check = self.run_script("--check", "--all")
+                self.assertEqual(check.code, 1)
+                self.assertIn(f"drift: release environment: prevent_self_review: want {json.dumps(want)}", check.out)
+
+    def test_lists_are_read_past_their_first_page(self):
+        self.write_list({"example/repo": entry(publishes=True, tags=["v*", "gen/go/v*", "gen/ts/v*"])})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.assertEqual(self.run_script("--all").code, 0)
+        repo = self.state["repos"]["example/repo"]
+        # Push every ruleset this script made past the first page.
+        repo["_rulesets"] = [{"id": n, "name": f"other {n}", "target": "branch", "enforcement": "active",
+                              "conditions": {}, "bypass_actors": [], "rules": []}
+                             for n in range(1, 2 * PAGE + 1)] + repo["_rulesets"]
+        self.assertGreater(len(repo["_policies"]), PAGE)
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(run.writes, [])
+        self.assertTrue(all(c.get("paginate") for c in run.calls
+                            if c["path"].endswith(("/rulesets", "/deployment-branch-policies"))))
+        self.assertEqual(self.run_script("--check", "--all").code, 0)
 
     def test_codeql_default_setup(self):
         self.write_list({"example/go": entry(codeql=["go", "actions"]), "example/none": entry(codeql=[])})
@@ -532,6 +598,60 @@ class ProtectRepo(unittest.TestCase):
         self.assertIn("example/home: drift: code owners: no .github/CODEOWNERS", run.out)
         applied = self.run_script("--all")
         self.assertIn("example/home: warning: no .github/CODEOWNERS", applied.out)
+
+    def test_check_without_admin_rights_leaves_bypass_lists_unchecked(self):
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.assertEqual(self.run_script("--all").code, 0)
+        self.state["repos"]["example/repo"]["permissions"] = {"admin": False}
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 0, run.out)
+        self.assertEqual(run.writes, [])
+        self.assertNotIn("drift:", run.out)
+        for name in ("main", "release tags", "release tag creation"):
+            self.assertIn(f"example/repo: ruleset '{name}' bypass: not checked", run.out)
+        self.assertIn("--check is only complete with an admin login", run.out)
+        self.assertIn("no drift in what could be read", run.out)
+        # The rest of each ruleset is still compared.
+        main = self.ruleset("example/repo", "main")
+        main["rules"] = [r for r in main["rules"] if r["type"] != "deletion"]
+        self.assertIn("example/repo: drift: ruleset 'main': rules.deletion:", self.run_script("--check", "--all").out)
+
+    def test_check_with_admin_rights_has_no_warning(self):
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.run_script("--all")
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 0, run.out)
+        self.assertNotIn("not checked", run.out)
+        self.assertNotIn("warning", run.out)
+        self.assertIn("no drift\n", run.out)
+
+    def test_check_wants_a_catch_all_codeowners_rule_naming_the_maintainer(self):
+        cases = {
+            "* @ciaranRoche\n": None,
+            "# owners\n/docs/ @someone\n*   @Someone  @CIARANROCHE  # everything else\n": None,
+            False: "no .github/CODEOWNERS on the default branch",
+            "/scripts/ @ciaranRoche\n# * @ciaranRoche\n": "no catch-all * rule in .github/CODEOWNERS",
+            "* @someone-else\n": "the catch-all * rule in .github/CODEOWNERS does not name @ciaranRoche",
+            # The last matching rule wins, so a later `*` line replaces the maintainer.
+            "* @ciaranRoche\n* @someone-else\n": "the catch-all * rule in .github/CODEOWNERS does not name @ciaranRoche",
+        }
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.run_script("--all")
+        for text, problem in cases.items():
+            with self.subTest(text=text):
+                self.state["repos"]["example/repo"]["_codeowners"] = text
+                run = self.run_script("--check", "--all")
+                self.assertEqual(run.writes, [])
+                if problem is None:
+                    self.assertEqual(run.code, 0, run.out)
+                    self.assertNotIn("code owners", run.out)
+                else:
+                    self.assertEqual(run.code, 1, run.out)
+                    self.assertIn(f"example/repo: drift: code owners: {problem}", run.out)
+                    self.assertIn(f"example/repo: warning: {problem}", self.run_script("--all").out)
 
     def test_the_header_says_who_runs_it(self):
         header = SCRIPT.read_text().split("set -euo pipefail")[0]

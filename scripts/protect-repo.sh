@@ -32,8 +32,17 @@
 #   publishes    whether it publishes, and so has a `release` environment.
 #   tags         its release tag patterns, such as "v*" or "gen/go/v*".
 #   codeql       languages for CodeQL's default setup, such as ["go", "actions"];
-#                [] turns it off.
-# The top-level `maintainer` is the required reviewer of each `release` environment.
+#                [] turns it off. Only the languages default setup supports.
+# and may have this one, false when left out:
+#   prevent_self_review  whether the `release` environment stops a reviewer approving
+#                a deployment in a run they started. Only with publishes. Off while
+#                the maintainer is the only reviewer: his merge starts each release
+#                run, so with it on nobody could approve the deployment and every
+#                release would wait until it timed out. The environment still needs
+#                his approval, and the bot account isn't a reviewer. Turn it on once
+#                there is a second reviewer.
+# The top-level `maintainer` is the required reviewer of each `release` environment,
+# and the account each .github/CODEOWNERS must name in its catch-all `*` rule.
 #
 # The options, for a repository not in the list (a one-off, such as outings):
 # --checks      status checks `main` must pass, separated by spaces. Leave it out for
@@ -58,13 +67,16 @@
 #               approval counting. Record it for every repo that uses release-please,
 #               or a later run turns the setting off again.
 # --no-actions  turn Actions off (repos with no workflows, like outings).
-# A one-off run protects release tags matching v* and leaves Issues and CodeQL as
-# they are.
+# A one-off run protects release tags matching v* (creation by GitHub Actions only,
+# as for a listed repository) and leaves Issues and CodeQL as they are.
 #
 # --check reads each repository's settings and prints what differs from the list,
-# changing nothing; it exits 1 on any difference. What can't be read without admin
-# rights is printed as "not checked". Without --check, each setting is written only
-# where it differs, so a second run in a row reports no change.
+# changing nothing; it exits 1 on any difference. Where code_owners is on, it also
+# reads .github/CODEOWNERS, which must have a catch-all `*` rule naming the
+# maintainer. What can't be read without admin rights is printed as "not checked",
+# so --check is only complete with an admin login, and it warns when it isn't.
+# Without --check, each setting is written only where it differs, so a second run in
+# a row reports no change.
 #
 # Needs: gh and jq.
 set -euo pipefail
@@ -119,14 +131,17 @@ esac
 # repository as it was. $strict is false for a one-off, which may leave issues and
 # codeql null (left as they are).
 # shellcheck disable=SC2016 # a jq program: jq expands its $names, not bash
+# langs is what the default-setup PATCH accepts in GitHub's published REST
+# description, so a language it would refuse fails here, before any repository changes.
 VALIDATE='
-def langs: ["actions","c-cpp","csharp","go","java-kotlin","javascript-typescript","python","ruby","rust","swift"];
+def langs: ["actions","c-cpp","csharp","go","java-kotlin","javascript-typescript","python","ruby","swift"];
 def fields: ["checks","actions","approvals","code_owners","actions_prs","issues","publishes","tags","codeql"];
+def optional: ["prevent_self_review"];
 def bool($r; $f): if (.[$f] | type) != "boolean" then "\($r): \($f) must be true or false" else empty end;
 def strings: type == "array" and all(.[]; type == "string" and length > 0);
 def repo($r):
   if type != "object" then "\($r): must be an object" else
-    ((keys - fields)[] | "\($r): unknown field \(.)"),
+    ((keys - fields - optional)[] | "\($r): unknown field \(.)"),
     ((fields - keys)[] | "\($r): missing field \(.)"),
     (if (.checks | strings | not) then "\($r): checks must be a list of names"
      elif (.checks | length) != (.checks | unique | length) then "\($r): checks has a name twice"
@@ -146,6 +161,9 @@ def repo($r):
        "\($r): actions_prs needs code_owners: with Actions allowed to approve PRs, only code-owner review stops a workflow token approving one"
      else empty end),
     (if .actions_prs == true and .actions != true then "\($r): actions_prs and actions off contradict each other" else empty end),
+    (if has("prevent_self_review") then bool($r; "prevent_self_review") else empty end),
+    (if .prevent_self_review == true and .publishes != true then
+       "\($r): prevent_self_review needs publishes: it is a setting of the release environment" else empty end),
     (if .publishes == true and .actions != true then "\($r): publishes needs actions: releases run on Actions" else empty end),
     (if .actions != true and ((.checks // []) | length) > 0 then "\($r): checks need actions: they report from GitHub Actions" else empty end),
     (if .actions != true and ((.codeql // []) | length) > 0 then "\($r): codeql needs actions: default setup runs on Actions" else empty end)
@@ -173,10 +191,10 @@ maintainer=$(jq -r .maintainer <<<"$listed")
 
 # The repositories to protect, one compact JSON object each: {"repo": ..., settings}.
 if [ "$all" = true ]; then
-  targets=$(jq -c '.repositories | to_entries[] | {repo: .key} + .value' <<<"$listed")
+  targets=$(jq -c '.repositories | to_entries[] | {repo: .key, prevent_self_review: false} + .value' <<<"$listed")
 else
   # GitHub's names ignore case, so "Paddock" is paddock and takes paddock's settings.
-  entry=$(jq -c --arg r "$target" '.repositories | to_entries[] | select((.key | ascii_downcase) == ($r | ascii_downcase)) | {repo: .key} + .value' <<<"$listed")
+  entry=$(jq -c --arg r "$target" '.repositories | to_entries[] | select((.key | ascii_downcase) == ($r | ascii_downcase)) | {repo: .key, prevent_self_review: false} + .value' <<<"$listed")
   if [ -n "$entry" ]; then
     [ "$one_off" = false ] || fail "$target is in $list, which sets its options: change it there"
     targets=$entry
@@ -186,7 +204,7 @@ else
       --argjson actions "$f_actions" '$ARGS.positional as $checks |
       {repo: $r, checks: $checks, actions: $actions, approvals: $approvals,
        code_owners: $code_owners, actions_prs: $actions_prs, issues: null,
-       publishes: false, tags: ["v*"], codeql: null}' --args ${f_checks[@]+"${f_checks[@]}"})
+       publishes: false, prevent_self_review: false, tags: ["v*"], codeql: null}' --args ${f_checks[@]+"${f_checks[@]}"})
     problems=$(jq -r --argjson strict false --arg m "$maintainer" \
       '{maintainer: $m, repositories: {(.repo): del(.repo)}} | '"$VALIDATE" <<<"$targets")
     [ -z "$problems" ] || fail "${problems//actions_prs needs code_owners/--actions-prs needs --code-owners}"
@@ -268,6 +286,13 @@ read_or() {
   local body
   if body=$(gh api "$1" 2>/dev/null); then printf '%s\n' "$body"; else printf '%s\n' "$2"; fi
 }
+# GitHub returns lists 30 to a page, and gh --paginate prints each page's JSON in
+# turn, so these join the pages before anything looks for a name in them.
+rulesets() { gh api --paginate "repos/$repo/rulesets" | jq -cs 'add // []'; }
+branch_policies() {
+  gh api --paginate "repos/$repo/environments/release/deployment-branch-policies" |
+    jq -cs '{branch_policies: (map(.branch_policies // []) | add // [])}'
+}
 
 write_ruleset() {
   local id=$1 body=$2
@@ -278,14 +303,21 @@ write_ruleset() {
   fi
 }
 ruleset() {
-  local name=$1 body=$2 id have
-  id=$(gh api "repos/$repo/rulesets" | jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty')
+  local name=$1 body=$2 id have want_c have_c
+  id=$(rulesets | jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty')
   have='{}'
   [ -z "$id" ] || have=$(gh api "repos/$repo/rulesets/$id")
-  reconcile "ruleset '$name'" \
-    "$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$body")" \
-    "$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$have")" \
-    write_ruleset "$id" "$body"
+  want_c=$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$body")
+  have_c=$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$have")
+  # GitHub leaves bypass_actors out of a ruleset for anyone who can't edit it, so
+  # without admin rights its absence says nothing about the bypass list. An apply
+  # (always an admin) still compares it, so a missing list is written, not skipped.
+  if [ "$mode" = check ] && [ "$have" != '{}' ] && ! jq -e 'has("bypass_actors")' >/dev/null <<<"$have"; then
+    want_c=$(jq -c 'del(.bypass)' <<<"$want_c")
+    have_c=$(jq -c 'del(.bypass)' <<<"$have_c")
+    not_checked "ruleset '$name' bypass"
+  fi
+  reconcile "ruleset '$name'" "$want_c" "$have_c" write_ruleset "$id" "$body"
 }
 
 write_merge() {
@@ -319,11 +351,11 @@ write_actions() {
 write_environment() {
   local cfg=$1 id policies
   id=$(gh api "users/$maintainer" | jq .id)
-  jq -n --argjson id "$id" '{wait_timer: 0, prevent_self_review: true,
+  jq --argjson id "$id" '{wait_timer: 0, prevent_self_review: .prevent_self_review,
     reviewers: [{type: "User", id: $id}], can_admins_bypass: false,
-    deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}' |
+    deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}' <<<"$cfg" |
     gh api -X PUT "repos/$repo/environments/release" --input - >/dev/null
-  policies=$(gh api "repos/$repo/environments/release/deployment-branch-policies")
+  policies=$(branch_policies)
   # Add the missing policies, then remove any the list doesn't name.
   jq -c --argjson have "$policies" '[{name: "main", type: "branch"}] + [.tags[] | {name: ., type: "tag"}]
     | .[] | select(. as $p | $have.branch_policies | any(.name == $p.name and .type == $p.type) | not)' <<<"$cfg" |
@@ -340,6 +372,26 @@ write_codeql() {
   jq -c 'if (.codeql | length) > 0 then {state: "configured", query_suite: "default", languages: .codeql}
          else {state: "not-configured"} end' <<<"$1" |
     gh api -X PATCH "repos/$repo/code-scanning/default-setup" --input - >/dev/null
+}
+
+# Prints what is wrong with the repository's .github/CODEOWNERS, or nothing. Code-owner
+# review asks only for the owners of the files a PR changes, so a file no rule covers
+# would merge without a code owner's approval: a catch-all `*` rule naming the
+# maintainer closes that. The last `*` line counts, as the last matching rule wins.
+codeowners_problem() {
+  local file
+  if ! file=$(gh api "repos/$repo/contents/.github/CODEOWNERS" 2>/dev/null); then
+    echo "no .github/CODEOWNERS on the default branch"
+    return 0
+  fi
+  jq -r --arg m "$maintainer" '
+    [.content // "" | gsub("\\s"; "") | @base64d | split("\n")[]
+     | sub("(^|\\s)#.*$"; "") | [splits("\\s+") | select(length > 0)]
+     | select(length > 0 and .[0] == "*")] as $all
+    | if ($all | length) == 0 then "no catch-all * rule in .github/CODEOWNERS"
+      elif ($all[-1][1:] | map(ascii_downcase) | index("@" + ($m | ascii_downcase)) | not)
+      then "the catch-all * rule in .github/CODEOWNERS does not name @\($m)"
+      else empty end' <<<"$file"
 }
 
 # Reads only. Refuses, before anything changes anywhere, an apply without admin
@@ -359,12 +411,16 @@ preflight() {
 }
 
 protect() {
-  local cfg=$1 info admin public checks approvals fresh tag_rules want have
+  local cfg=$1 info admin public checks approvals fresh tag_rules want have problem pol
   repo=$(jq -r .repo <<<"$cfg")
   info=$(gh api "repos/$repo")
   admin=$(jq -r '.permissions.admin // false' <<<"$info")
   public=$(jq -r '.private == false' <<<"$info")
   changed=false
+  if [ "$mode" = check ] && [ "$admin" != true ]; then
+    say "warning: not an admin of this repository, so this check is incomplete: --check is only complete with an admin login"
+    incomplete=true
+  fi
 
   # main: changes arrive by squashed pull request; no force-push, no deletion. Admins
   # may bypass only through a pull request (release-please's PRs get no CI), which
@@ -461,34 +517,46 @@ protect() {
   fi
 
   # CODEOWNERS is a file, changed by pull request, so this only reports it.
-  if [ "$(jq -r .code_owners <<<"$cfg")" = true ] &&
-     ! gh api "repos/$repo/contents/.github/CODEOWNERS" >/dev/null 2>&1; then
-    if [ "$mode" = check ]; then
-      say "drift: code owners: no .github/CODEOWNERS on the default branch"
+  if [ "$(jq -r .code_owners <<<"$cfg")" = true ]; then
+    problem=$(codeowners_problem)
+    if [ -z "$problem" ]; then
+      :
+    elif [ "$mode" = check ]; then
+      say "drift: code owners: $problem"
       drift=true
     else
-      say "warning: no .github/CODEOWNERS on the default branch: add one by pull request"
+      say "warning: $problem: fix it by pull request"
     fi
   fi
 
   # release: deployments only from main and the release tags, each waiting for the
-  # maintainer, who can't approve a run he started himself; admins can't skip it. It
-  # holds no registry secrets: images go to ghcr.io with the job's own token.
+  # maintainer; admins can't skip it. Prevent self-review follows the list (see the
+  # header for why it is off by default). It holds no registry secrets: images go to
+  # ghcr.io with the job's own token.
   if [ "$(jq -r .publishes <<<"$cfg")" = true ]; then
     if [ "$admin" = true ]; then
-      want=$(jq -c --arg m "$maintainer" '{reviewers: [$m | ascii_downcase], prevent_self_review: true,
+      want=$(jq -c --arg m "$maintainer" '{reviewers: [$m | ascii_downcase], prevent_self_review: .prevent_self_review,
         can_admins_bypass: false, protected_branches: false, custom_branch_policies: true,
         policies: (["branch:main"] + [.tags[] | "tag:\(.)"] | sort)}' <<<"$cfg")
-      have=$(jq -c --argjson pol "$(read_or "repos/$repo/environments/release/deployment-branch-policies" '{}')" '
+      if ! pol=$(branch_policies 2>/dev/null); then pol='{}'; fi
+      have=$(jq -c --argjson pol "$pol" '
         if . == {} then {} else
         ([.protection_rules[]? | select(.type == "required_reviewers")][0] // {}) as $r
         | {reviewers: ([$r.reviewers[]? | "\(.reviewer.login)" | ascii_downcase] | sort),
            prevent_self_review: ($r.prevent_self_review // false),
-           can_admins_bypass: .can_admins_bypass,
            protected_branches: .deployment_branch_policy.protected_branches,
            custom_branch_policies: .deployment_branch_policy.custom_branch_policies,
-           policies: ([$pol.branch_policies[]? | "\(.type):\(.name)"] | sort)} end' \
+           policies: ([$pol.branch_policies[]? | "\(.type):\(.name)"] | sort)}
+          + if has("can_admins_bypass") then {can_admins_bypass} else {} end end' \
         <<<"$(read_or "repos/$repo/environments/release" '{}')")
+      # can_admins_bypass isn't in GitHub's published REST description, though live
+      # environment responses carry it and it is the setting that stops an admin
+      # skipping the maintainer's approval. It is still written; if a response ever
+      # leaves it out, it is reported as not checked rather than as drift for good.
+      if [ "$have" != '{}' ] && ! jq -e 'has("can_admins_bypass")' >/dev/null <<<"$have"; then
+        want=$(jq -c 'del(.can_admins_bypass)' <<<"$want")
+        say "release environment: can_admins_bypass: not checked (GitHub didn't return it)"
+      fi
       reconcile "release environment" "$want" "$have" write_environment "$cfg"
     else
       not_checked "release environment"
@@ -517,10 +585,15 @@ protect() {
 repo=""
 drift=false
 changed=false
+incomplete=false
 # The list is read on fd 3, so nothing in the loop can swallow it from stdin.
 while IFS= read -r cfg <&3; do preflight "$cfg"; done 3<<<"$targets"
 while IFS= read -r cfg <&3; do protect "$cfg"; done 3<<<"$targets"
 if [ "$mode" = check ]; then
   if [ "$drift" = true ]; then exit 1; fi
-  echo "no drift"
+  if [ "$incomplete" = true ]; then
+    echo "no drift in what could be read: --check is only complete with an admin login"
+  else
+    echo "no drift"
+  fi
 fi
