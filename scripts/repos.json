@@ -1,0 +1,27 @@
+{
+  "maintainer": "ciaranRoche",
+  "repositories": {
+    "those-who-run/.github": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": true,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": ["actions", "python"]
+    },
+    "those-who-run/paddock": {
+      "checks": [],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": true,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    }
+  }
+}

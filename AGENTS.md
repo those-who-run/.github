@@ -43,6 +43,15 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
   is pinned by commit SHA with the tag in a comment; checkouts set
   `persist-credentials: false`. zizmor and actionlint check this in the commit hooks.
 
+## Repository protection
+
+`scripts/repos.json` lists every v2 repository and what it needs: its required
+checks (each name as GitHub reports it, such as `checks / checks`), approvals, code
+owners, Issues, release tag patterns, whether it publishes, and CodeQL's languages.
+`scripts/protect-repo.sh` applies it. A new repository, or a check that a repository
+starts to require, is a change to that list in a PR; the maintainer merges it and
+runs the script. Agents never run it: it changes repository settings.
+
 ## Releases
 
 release-please keeps a release PR open from the Conventional Commits on `main`. The

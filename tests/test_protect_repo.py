@@ -1,68 +1,542 @@
-"""scripts/protect-repo.sh's options, run against a stub `gh` that only records
-its calls, so nothing reaches GitHub."""
+"""scripts/protect-repo.sh and its list, scripts/repos.json, run against a stub `gh`
+that keeps a pretend GitHub's settings in a JSON file, so nothing reaches GitHub.
 
+The stub answers the reads the script makes in the shapes GitHub's REST API returns
+them, applies its writes, and logs every call. That is enough to see what a run would
+send, that a second run changes nothing, and that --check reports a difference
+without writing anything.
+"""
+
+from __future__ import annotations
+
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "protect-repo.sh"
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = ROOT / "scripts" / "protect-repo.sh"
+LIST = ROOT / "scripts" / "repos.json"
+MAINTAINER_ID = 1001
 
-# Answers the two reads the script makes (existing rulesets, visibility) and logs
-# every call, one per line.
-STUB = """#!/bin/sh
-printf '%s\\n' "$*" >> "$GH_LOG"
-case "$*" in
-  *--jq\\ .private*) echo false ;;
-esac
-exit 0
-"""
+STUB = r'''
+import json, os, re, sys
+
+state_path, log_path = os.environ["GH_STATE"], os.environ["GH_CALLS"]
+state = json.load(open(state_path))
+args = sys.argv[1:]
+call = {"argv": args, "method": "GET", "path": None, "fields": {}, "input": None}
+assert args[0] == "api", args
+i = 1
+while i < len(args):
+    a = args[i]
+    if a == "-X":
+        call["method"] = args[i + 1]; i += 2
+    elif a == "--input":
+        call["input"] = json.loads(sys.stdin.read()); i += 2
+    elif a in ("-f", "-F"):
+        k, v = args[i + 1].split("=", 1)
+        if a == "-F":
+            v = {"true": True, "false": False}.get(v, int(v) if v.isdigit() else v)
+        call["fields"][k] = v; i += 2
+    else:
+        call["path"] = a; i += 1
+
+def done(body=None, status=0):
+    with open(log_path, "a") as log:
+        log.write(json.dumps(call) + "\n")
+    json.dump(state, open(state_path, "w"))
+    if status:
+        print(json.dumps({"message": "Not Found"}))
+        print(f"gh: Not Found (HTTP {status})", file=sys.stderr)
+        sys.exit(1)
+    if body is not None:
+        print(json.dumps(body))
+    sys.exit(0)
+
+method, path, fields, body = call["method"], call["path"], call["fields"], call["input"]
+m = re.fullmatch(r"users/([^/]+)", path)
+if m:
+    uid = state["users"].get(m[1])
+    done({"login": m[1], "id": uid} if uid else None, 0 if uid else 404)
+m = re.fullmatch(r"repos/([^/]+/[^/]+)(/.*)?", path)
+if not m or m[1] not in state["repos"]:
+    done(status=404)
+r, rest = state["repos"][m[1]], m[2] or ""
+
+def next_id():
+    state["next_id"] += 1
+    return state["next_id"]
+
+if rest == "":
+    if method == "GET":
+        done({k: v for k, v in r.items() if not k.startswith("_")})
+    for k, v in fields.items():
+        keys = re.findall(r"[^\[\]]+", k)
+        target = r
+        for key in keys[:-1]:
+            target = target.setdefault(key, {})
+        target[keys[-1]] = v
+    done({})
+if rest == "/rulesets":
+    if method == "GET":
+        done([{"id": x["id"], "name": x["name"], "target": x["target"]} for x in r["_rulesets"]])
+    r["_rulesets"].append(dict(body, id=next_id()))
+    done({})
+m = re.fullmatch(r"/rulesets/(\d+)", rest)
+if m:
+    found = [x for x in r["_rulesets"] if x["id"] == int(m[1])]
+    if not found:
+        done(status=404)
+    if method == "GET":
+        # GitHub adds fields of its own and needn't keep the order it was sent.
+        shown = json.loads(json.dumps(found[0]))
+        shown.update(source="x/y", source_type="Repository")
+        shown["rules"] = list(reversed(shown["rules"]))
+        for rule in shown["rules"]:
+            if rule["type"] == "pull_request":
+                rule["parameters"]["required_reviewers"] = []
+        done(shown)
+    r["_rulesets"] = [x for x in r["_rulesets"] if x["id"] != int(m[1])] + [dict(body, id=int(m[1]))]
+    done({})
+if rest == "/vulnerability-alerts":
+    if method == "GET":
+        done(None, 0 if r["_alerts"] else 404)
+    r["_alerts"] = True; done()
+if rest == "/private-vulnerability-reporting":
+    if method == "GET":
+        done({"enabled": r["_pvr"]})
+    r["_pvr"] = True; done()
+simple = {
+    "/actions/permissions": "_actions",
+    "/actions/permissions/selected-actions": "_selected",
+    "/actions/permissions/workflow": "_workflow",
+    "/actions/permissions/fork-pr-contributor-approval": "_fork",
+}
+if rest in simple:
+    if method == "GET":
+        done(r[simple[rest]])
+    r[simple[rest]].update(body if body is not None else fields)
+    done({})
+if rest == "/contents/.github/CODEOWNERS":
+    done({"name": "CODEOWNERS", "path": ".github/CODEOWNERS"} if r["_codeowners"] else None,
+         0 if r["_codeowners"] else 404)
+if rest == "/environments/release":
+    if method == "GET":
+        env = r["_env"]
+        if env is None:
+            done(status=404)
+        logins = {v: k for k, v in state["users"].items()}
+        done({"name": "release", "can_admins_bypass": env["can_admins_bypass"],
+              "deployment_branch_policy": env["deployment_branch_policy"],
+              "protection_rules": [
+                  {"id": 1, "type": "required_reviewers", "prevent_self_review": env["prevent_self_review"],
+                   "reviewers": [{"type": x["type"], "reviewer": {"login": logins[x["id"]], "id": x["id"]}}
+                                 for x in env["reviewers"]]},
+                  {"id": 2, "type": "branch_policy"}]})
+    r["_env"] = body; done({})
+if rest == "/environments/release/deployment-branch-policies":
+    if r["_env"] is None:
+        done(status=404)
+    if method == "GET":
+        done({"total_count": len(r["_policies"]), "branch_policies": r["_policies"]})
+    r["_policies"].append(dict(body, id=next_id())); done({})
+m = re.fullmatch(r"/environments/release/deployment-branch-policies/(\d+)", rest)
+if m and method == "DELETE":
+    r["_policies"] = [p for p in r["_policies"] if p["id"] != int(m[1])]; done()
+if rest == "/code-scanning/default-setup":
+    if method == "GET":
+        done(r["_codeql"])
+    r["_codeql"] = {"state": body["state"], "languages": body.get("languages", []), "query_suite": "default"}
+    done({})
+call["unhandled"] = True
+done(status=404)
+'''
+
+
+def fresh_repo(**overrides):
+    """A repository as GitHub creates it, before this script has touched it."""
+    repo = {
+        "private": False, "has_issues": True, "permissions": {"admin": True},
+        "allow_squash_merge": True, "allow_merge_commit": True, "allow_rebase_merge": True,
+        "squash_merge_commit_title": "COMMIT_OR_PR_TITLE", "delete_branch_on_merge": False,
+        "allow_auto_merge": False,
+        "security_and_analysis": {"secret_scanning": {"status": "disabled"},
+                                  "secret_scanning_push_protection": {"status": "disabled"}},
+        "_rulesets": [], "_alerts": False, "_pvr": False, "_codeowners": True,
+        "_actions": {"enabled": True, "allowed_actions": "all", "sha_pinning_required": False},
+        "_selected": {}, "_workflow": {"default_workflow_permissions": "write",
+                                       "can_approve_pull_request_reviews": True},
+        "_fork": {"approval_policy": "first_time_contributors"},
+        "_env": None, "_policies": [],
+        "_codeql": {"state": "not-configured", "languages": [], "query_suite": "default"},
+    }
+    repo.update(overrides)
+    return repo
+
+
+def entry(**overrides):
+    value = {"checks": ["test"], "actions": True, "approvals": 1, "code_owners": True,
+             "actions_prs": False, "issues": False, "publishes": False, "tags": ["v*"],
+             "codeql": []}
+    value.update(overrides)
+    return value
+
+
+class Run:
+    def __init__(self, result, calls, state):
+        self.code, self.out, self.err = result.returncode, result.stdout, result.stderr
+        self.calls, self.state = calls, state
+
+    @property
+    def writes(self):
+        return [c for c in self.calls if c["method"] != "GET"]
+
+    def sent(self, path_end):
+        return [c for c in self.writes if c["path"].endswith(path_end)]
 
 
 class ProtectRepo(unittest.TestCase):
-    def run_script(self, *args):
-        with tempfile.TemporaryDirectory() as tmp:
-            stub = Path(tmp) / "gh"
-            stub.write_text(STUB)
-            stub.chmod(0o755)
-            log = Path(tmp) / "calls.log"
-            log.touch()
-            env = dict(os.environ, PATH=f"{tmp}{os.pathsep}{os.environ['PATH']}", GH_LOG=str(log))
-            result = subprocess.run(
-                ["bash", str(SCRIPT), "example/repo", *args],
-                env=env, capture_output=True, text=True, check=False,
-            )
-            return result, log.read_text().splitlines()
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        tmp = Path(self.tmp.name)
+        stub = tmp / "gh"
+        stub.write_text(f"#!{sys.executable}\n{STUB}")
+        stub.chmod(0o755)
+        self.state_path = tmp / "state.json"
+        self.calls_path = tmp / "calls.jsonl"
+        self.list_path = tmp / "repos.json"
+        self.state = {"repos": {}, "users": {"ciaranRoche": MAINTAINER_ID}, "next_id": 100}
+        self.env = dict(os.environ, PATH=f"{tmp}{os.pathsep}{os.environ['PATH']}",
+                        GH_STATE=str(self.state_path), GH_CALLS=str(self.calls_path))
 
-    def workflow_call(self, calls):
-        found = [c for c in calls if "actions/permissions/workflow" in c]
-        self.assertEqual(len(found), 1, calls)
+    def write_list(self, repositories, maintainer="ciaranRoche"):
+        self.list_path.write_text(json.dumps({"maintainer": maintainer, "repositories": repositories}))
+
+    def run_script(self, *args, list_file=None):
+        self.state_path.write_text(json.dumps(self.state))
+        self.calls_path.write_text("")
+        if list_file is None:
+            list_file = self.list_path if self.list_path.exists() else LIST
+        result = subprocess.run(["bash", str(SCRIPT), *args, "--list", str(list_file)],
+                                env=self.env, capture_output=True, text=True, check=False)
+        calls = [json.loads(line) for line in self.calls_path.read_text().splitlines()]
+        self.state = json.loads(self.state_path.read_text())
+        self.assertFalse([c for c in calls if c.get("unhandled")], "the stub didn't know a call")
+        return Run(result, calls, self.state)
+
+    def ruleset(self, repo, name):
+        found = [r for r in self.state["repos"][repo]["_rulesets"] if r["name"] == name]
+        self.assertEqual(len(found), 1, name)
         return found[0]
 
+    # One-off runs, with options, for a repository not in the list.
+
     def test_actions_prs_without_code_owners_changes_nothing(self):
-        result, calls = self.run_script("--approvals", "1", "--actions-prs")
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("--actions-prs needs --code-owners", result.stderr)
-        self.assertEqual(calls, [])
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--approvals", "1", "--actions-prs")
+        self.assertEqual(run.code, 2)
+        self.assertIn("--actions-prs needs --code-owners", run.err)
+        self.assertEqual(run.calls, [])
 
     def test_actions_prs_with_no_actions_changes_nothing(self):
-        result, calls = self.run_script("--code-owners", "--actions-prs", "--no-actions")
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(calls, [])
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--code-owners", "--actions-prs", "--no-actions")
+        self.assertEqual(run.code, 2)
+        self.assertEqual(run.calls, [])
 
     def test_actions_prs_with_code_owners_lets_actions_open_prs(self):
-        result, calls = self.run_script("--approvals", "1", "--code-owners", "--actions-prs")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("can_approve_pull_request_reviews=true", self.workflow_call(calls))
-        self.assertTrue(any("rulesets" in c for c in calls), calls)
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--approvals", "1", "--code-owners", "--actions-prs")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIs(self.state["repos"]["example/repo"]["_workflow"]["can_approve_pull_request_reviews"], True)
+        main = self.ruleset("example/repo", "main")
+        pr = [r for r in main["rules"] if r["type"] == "pull_request"][0]["parameters"]
+        self.assertIs(pr["require_code_owner_review"], True)
+
+    def test_actions_prs_without_a_codeowners_file_changes_nothing(self):
+        self.state["repos"]["example/repo"] = fresh_repo(_codeowners=False)
+        run = self.run_script("example/repo", "--code-owners", "--actions-prs")
+        self.assertEqual(run.code, 2)
+        self.assertIn("CODEOWNERS", run.err)
+        self.assertEqual(run.writes, [])
 
     def test_by_default_actions_cannot_approve(self):
         for args in ([], ["--code-owners"]):
             with self.subTest(args=args):
-                result, calls = self.run_script("--approvals", "1", *args)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("can_approve_pull_request_reviews=false", self.workflow_call(calls))
+                self.state["repos"]["example/repo"] = fresh_repo()
+                run = self.run_script("example/repo", "--approvals", "1", *args)
+                self.assertEqual(run.code, 0, run.err)
+                self.assertIs(self.state["repos"]["example/repo"]["_workflow"]["can_approve_pull_request_reviews"], False)
+
+    def test_check_names_with_spaces_and_slashes_reach_github_whole(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--checks", "test lint",
+                              "--check-name", "checks / checks", "--check-name", "image / build")
+        self.assertEqual(run.code, 0, run.err)
+        sent = json.dumps(run.sent("/rulesets")[0]["input"])
+        for name in ("test", "lint", "checks / checks", "image / build"):
+            self.assertIn(json.dumps({"context": name, "integration_id": 15368}), sent)
+
+    def test_one_off_leaves_issues_and_codeql_alone(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertIs(self.state["repos"]["example/repo"]["has_issues"], True)
+        self.assertFalse(run.sent("/code-scanning/default-setup"))
+
+    def test_bad_arguments_change_nothing(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        for args in (["--all", "example/repo"], ["--all", "--approvals", "1"], [],
+                     ["example/repo", "--approvals", "one"], ["example/repo", "--checks"],
+                     ["example/repo", "other/repo"], ["example/repo", "--frobnicate"]):
+            with self.subTest(args=args):
+                run = self.run_script(*args)
+                self.assertEqual(run.code, 2)
+                self.assertEqual(run.calls, [])
+
+    # The list.
+
+    def test_the_list_in_the_repository_is_valid_and_applies(self):
+        listed = json.loads(LIST.read_text())["repositories"]
+        for name in listed:
+            self.state["repos"][name] = fresh_repo()
+        run = self.run_script("--all", list_file=LIST)
+        self.assertEqual(run.code, 0, run.err)
+        self.assertNotIn("those-who-run/those-who-run", listed)
+        self.assertEqual(listed["those-who-run/.github"]["checks"][:2], ["test", "checks / checks"])
+
+    def test_listed_check_names_reach_github_whole(self):
+        self.write_list({"example/repo": entry(checks=["test", "checks / checks", "image / build"])})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo")
+        self.assertEqual(run.code, 0, run.err)
+        sent = json.dumps(run.sent("/rulesets")[0]["input"])
+        self.assertIn('"context": "checks / checks"', sent)
+        self.assertIn('"context": "image / build"', sent)
+        self.assertNotIn('"context": "checks"', sent)
+
+    def test_a_bad_list_changes_nothing(self):
+        cases = {
+            "missing field tags": {"example/repo": {k: v for k, v in entry().items() if k != "tags"}},
+            "unknown field colour": {"example/repo": entry(colour="red")},
+            "actions_prs needs code_owners": {"example/repo": entry(actions_prs=True, code_owners=False)},
+            "actions_prs and actions off": {"example/repo": entry(actions_prs=True, actions=False, checks=[])},
+            "publishes needs actions": {"example/repo": entry(publishes=True, actions=False, checks=[])},
+            "checks need actions": {"example/repo": entry(actions=False)},
+            "codeql needs actions": {"example/repo": entry(actions=False, checks=[], codeql=["go"])},
+            "approvals must be a whole number": {"example/repo": entry(approvals=-1)},
+            "approvals must be a whole number,": {"example/repo": entry(approvals=1.5)},
+            "approvals must be a whole number, 0": {"example/repo": entry(approvals="1")},
+            "tags must list at least one pattern": {"example/repo": entry(tags=[])},
+            "without refs/tags/": {"example/repo": entry(tags=["refs/tags/v*"])},
+            "codeql languages are": {"example/repo": entry(codeql=["golang"])},
+            "checks must be a list of names": {"example/repo": entry(checks="test lint")},
+            "checks has a name twice": {"example/repo": entry(checks=["test", "test"])},
+            "issues must be true or false": {"example/repo": entry(issues=None)},
+            "not an owner/repo name": {"example repo": entry()},
+            "listed twice": {"example/repo": entry(), "Example/Repo": entry()},
+        }
+        self.state["repos"]["example/repo"] = fresh_repo()
+        for message, repositories in cases.items():
+            with self.subTest(message):
+                self.write_list(repositories)
+                for args in (["--all"], ["--check", "--all"]):
+                    run = self.run_script(*args)
+                    self.assertEqual(run.code, 2, run.out)
+                    self.assertIn(message, run.err)
+                    self.assertEqual(run.calls, [])
+        self.write_list({"example/repo": entry()}, maintainer="")
+        self.assertIn("maintainer", self.run_script("--all").err)
+        self.list_path.write_text("{not json")
+        self.assertEqual(self.run_script("--all").code, 2)
+
+    def test_a_listed_repository_takes_no_options(self):
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--approvals", "0")
+        self.assertEqual(run.code, 2)
+        self.assertIn("change it there", run.err)
+        self.assertEqual(run.calls, [])
+
+    def test_a_listed_repository_is_found_whatever_its_case(self):
+        self.write_list({"example/repo": entry(approvals=1)})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.assertEqual(self.run_script("Example/Repo", "--approvals", "0").code, 2)
+        run = self.run_script("Example/Repo")
+        self.assertEqual(run.code, 0, run.err)
+        pr = [r for r in self.ruleset("example/repo", "main")["rules"] if r["type"] == "pull_request"][0]
+        self.assertEqual(pr["parameters"]["required_approving_review_count"], 1)
+
+    def test_apply_needs_an_admin_and_check_does_not(self):
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo(permissions={"admin": False})
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 2)
+        self.assertEqual(run.writes, [])
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.writes, [])
+        self.assertIn("example/repo: Actions: not checked", run.out)
+        self.assertIn("example/repo: drift: issues: has_issues: want false, have true", run.out)
+
+    def test_a_refused_repository_stops_the_whole_run_before_any_change(self):
+        self.write_list({"example/a": entry(),
+                         "example/b": entry(actions_prs=True)})
+        self.state["repos"]["example/a"] = fresh_repo()
+        self.state["repos"]["example/b"] = fresh_repo(_codeowners=False)
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 2)
+        self.assertEqual(run.writes, [])
+
+    # What an apply sets.
+
+    def test_release_tags_never_move_and_only_actions_creates_them(self):
+        self.write_list({"example/repo": entry(tags=["v*", "gen/go/v*"])})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 0, run.err)
+        include = ["refs/tags/v*", "refs/tags/gen/go/v*"]
+        tags = self.ruleset("example/repo", "release tags")
+        self.assertEqual(tags["target"], "tag")
+        self.assertEqual(tags["conditions"]["ref_name"]["include"], include)
+        self.assertEqual(sorted(r["type"] for r in tags["rules"]), ["deletion", "non_fast_forward", "update"])
+        self.assertEqual(tags["bypass_actors"], [])
+        creation = self.ruleset("example/repo", "release tag creation")
+        self.assertEqual(creation["conditions"]["ref_name"]["include"], include)
+        self.assertEqual(creation["rules"], [{"type": "creation"}])
+        self.assertEqual(creation["bypass_actors"],
+                         [{"actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always"}])
+
+    def test_issues_follow_the_list(self):
+        self.write_list({"example/on": entry(issues=True), "example/off": entry(issues=False)})
+        self.state["repos"]["example/on"] = fresh_repo(has_issues=False)
+        self.state["repos"]["example/off"] = fresh_repo(has_issues=True)
+        self.assertEqual(self.run_script("--all").code, 0)
+        self.assertIs(self.state["repos"]["example/on"]["has_issues"], True)
+        self.assertIs(self.state["repos"]["example/off"]["has_issues"], False)
+
+    def test_the_actions_allowlist(self):
+        self.write_list({"example/repo": entry()})
+        self.state["repos"]["example/repo"] = fresh_repo()
+        self.assertEqual(self.run_script("--all").code, 0)
+        repo = self.state["repos"]["example/repo"]
+        self.assertEqual(repo["_actions"], {"enabled": True, "allowed_actions": "selected",
+                                            "sha_pinning_required": True})
+        self.assertIs(repo["_selected"]["verified_allowed"], False)
+        self.assertIn("ossf/scorecard-action@*", repo["_selected"]["patterns_allowed"])
+        self.assertNotIn("golangci/*", repo["_selected"]["patterns_allowed"])
+        self.assertEqual(repo["_workflow"]["default_workflow_permissions"], "read")
+        self.assertEqual(repo["_fork"]["approval_policy"], "all_external_contributors")
+
+    def test_a_publishing_repository_gets_a_release_environment(self):
+        self.write_list({"example/repo": entry(publishes=True, tags=["v*"])})
+        self.state["repos"]["example/repo"] = fresh_repo(
+            _env={"prevent_self_review": False, "reviewers": [], "can_admins_bypass": True,
+                  "deployment_branch_policy": None},
+            _policies=[{"id": 7, "name": "dev", "type": "branch"}])
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 0, run.err)
+        env = self.state["repos"]["example/repo"]["_env"]
+        self.assertEqual(env["reviewers"], [{"type": "User", "id": MAINTAINER_ID}])
+        self.assertIs(env["prevent_self_review"], True)
+        self.assertIs(env["can_admins_bypass"], False)
+        self.assertEqual(env["deployment_branch_policy"],
+                         {"protected_branches": False, "custom_branch_policies": True})
+        self.assertNotIn("secrets", json.dumps(run.writes))
+        policies = sorted((p["type"], p["name"]) for p in self.state["repos"]["example/repo"]["_policies"])
+        self.assertEqual(policies, [("branch", "main"), ("tag", "v*")])
+        self.assertIn("release environment: unchanged", self.run_script("--all").out)
+
+    def test_codeql_default_setup(self):
+        self.write_list({"example/go": entry(codeql=["go", "actions"]), "example/none": entry(codeql=[])})
+        self.state["repos"]["example/go"] = fresh_repo()
+        self.state["repos"]["example/none"] = fresh_repo(
+            _codeql={"state": "configured", "languages": ["python"], "query_suite": "default"})
+        self.assertEqual(self.run_script("--all").code, 0)
+        self.assertEqual(self.state["repos"]["example/go"]["_codeql"]["state"], "configured")
+        self.assertEqual(sorted(self.state["repos"]["example/go"]["_codeql"]["languages"]), ["actions", "go"])
+        self.assertEqual(self.state["repos"]["example/none"]["_codeql"]["state"], "not-configured")
+
+    # Running it again, and --check.
+
+    def everything_listed(self):
+        self.write_list({
+            "example/tool": entry(checks=["test", "checks / checks"], actions_prs=True, codeql=["python"]),
+            "example/home": entry(checks=[], issues=True),
+            "example/image": entry(checks=["go / test", "image / build"], publishes=True,
+                                   tags=["v*", "gen/go/v*"], codeql=["go"]),
+            "example/data": entry(checks=[], actions=False, approvals=0, code_owners=False),
+        })
+        for name in ("example/tool", "example/home", "example/image", "example/data"):
+            self.state["repos"][name] = fresh_repo()
+
+    def test_a_second_apply_changes_nothing(self):
+        self.everything_listed()
+        first = self.run_script("--all")
+        self.assertEqual(first.code, 0, first.err)
+        self.assertTrue(first.writes)
+        second = self.run_script("--all")
+        self.assertEqual(second.code, 0, second.err)
+        self.assertEqual(second.writes, [])
+        for name in ("example/tool", "example/home", "example/image", "example/data"):
+            self.assertIn(f"{name}: no change", second.out)
+        self.assertNotIn(": changed", second.out)
+
+    def test_check_reports_drift_before_an_apply_and_none_after(self):
+        self.everything_listed()
+        before = self.run_script("--check", "--all")
+        self.assertEqual(before.code, 1)
+        self.assertEqual(before.writes, [])
+        self.assertIn("example/tool: drift: ruleset 'main'", before.out)
+        self.assertIn("example/image: drift: release environment", before.out)
+        self.run_script("--all")
+        after = self.run_script("--check", "--all")
+        self.assertEqual(after.code, 0, after.out)
+        self.assertEqual(after.writes, [])
+        self.assertNotIn("drift:", after.out)
+
+    def test_check_reports_a_setting_changed_by_hand(self):
+        self.everything_listed()
+        self.run_script("--all")
+        tool = self.state["repos"]["example/tool"]
+        tool["has_issues"] = True
+        tool["_workflow"]["can_approve_pull_request_reviews"] = False
+        tool["_selected"]["patterns_allowed"].remove("ossf/scorecard-action@*")
+        main = [r for r in tool["_rulesets"] if r["name"] == "main"][0]
+        [r for r in main["rules"] if r["type"] == "required_status_checks"][0]["parameters"][
+            "required_status_checks"].pop()
+        creation = [r for r in tool["_rulesets"] if r["name"] == "release tag creation"][0]
+        creation["bypass_actors"].append({"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"})
+        run = self.run_script("--check", "example/tool")
+        self.assertEqual(run.code, 1)
+        self.assertEqual(run.writes, [])
+        for line in (
+            "example/tool: drift: issues: has_issues: want false, have true",
+            "example/tool: drift: Actions: can_approve_pull_request_reviews: want true, have false",
+            "example/tool: drift: Actions: patterns_allowed:",
+            "example/tool: drift: ruleset 'main': rules.required_status_checks.required_status_checks:",
+            "example/tool: drift: ruleset 'release tag creation': bypass:",
+        ):
+            self.assertIn(line, run.out)
+
+    def test_check_reports_a_missing_codeowners_file(self):
+        self.everything_listed()
+        self.run_script("--all")
+        self.state["repos"]["example/home"]["_codeowners"] = False
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertIn("example/home: drift: code owners: no .github/CODEOWNERS", run.out)
+        applied = self.run_script("--all")
+        self.assertIn("example/home: warning: no .github/CODEOWNERS", applied.out)
+
+    def test_the_header_says_who_runs_it(self):
+        header = SCRIPT.read_text().split("set -euo pipefail")[0]
+        self.assertIn("Run by the maintainer", header)
+        self.assertIn("Never by\n# an agent, and never from CI with write rights", header)
 
 
 if __name__ == "__main__":
