@@ -1,0 +1,217 @@
+name: Image publish
+
+# Publishes the image image.yml built and smoke-tested earlier in the same release
+# run, as ghcr.io/those-who-run/twr-<repo>:X.Y.Z, and attests its provenance and SBOM.
+# It builds nothing and runs no command from the calling repository: it checks that
+# the artifact's image has the digest image.yml recorded, pushes exactly that image
+# and attests that digest. Callers, inputs and how to verify an image:
+# .github/workflows/README.md.
+#
+# The job name is stable, because rulesets and environments see checks by name
+# (`<caller job> / <reusable job>`):
+#   publish  only from a vX.Y.Z tag, in the caller's `release` environment: checks
+#            the digest, pushes with its own GITHUB_TOKEN and attests. The only job,
+#            in either workflow, with packages, id-token and attestations write.
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: The image's name under ghcr.io/<owner>/, as given to image.yml. Empty means twr-<repository>.
+        type: string
+        default: ""
+      digest:
+        description: image.yml's `digest` output from the same run.
+        type: string
+        required: true
+      artifact:
+        description: image.yml's `artifact` output from the same run.
+        type: string
+        required: true
+    outputs:
+      digest:
+        description: The published image's digest (sha256:…).
+        value: ${{ jobs.publish.outputs.digest }}
+
+# Nothing by default; the job asks for what it uses.
+permissions: {}
+
+# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The maintainer approves each publish there (a required reviewer), and the
+    # environment's deployment rules keep it to tags.
+    environment: release
+    permissions:
+      contents: read
+      packages: write # the push to ghcr.io with this job's token: no registry secret
+      id-token: write # the OIDC token Sigstore signs the attestations with
+      attestations: write # stores the attestations in the caller's repository
+    # One publish per ref at a time, never cancelled half-pushed.
+    concurrency:
+      group: image-publish-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      digest: ${{ steps.check.outputs.digest }}
+    steps:
+      # First, so a publish from a branch or a PR fails before anything else.
+      # Everything a caller or the event controls comes in through env:, never
+      # expanded into the script.
+      - name: Check the ref and inputs
+        id: check
+        env:
+          IMAGE_INPUT: ${{ inputs.image }}
+          DIGEST: ${{ inputs.digest }}
+          ARTIFACT: ${{ inputs.artifact }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$REF_TYPE" != tag ] || [ "$REF" != "refs/tags/$REF_NAME" ]; then
+            echo "::error::image-publish.yml runs only from a vX.Y.Z tag, not $REF"
+            exit 1
+          fi
+          if ! [[ $REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::tag $REF_NAME is not vX.Y.Z (or vX.Y.Z-pre)"
+            exit 1
+          fi
+          version=${BASH_REMATCH[1]}
+          image=${IMAGE_INPUT:-twr-${GITHUB_REPOSITORY#*/}}
+          if ! [[ $image =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::image name '$image' is not a lower-case OCI repository name"
+            exit 1
+          fi
+          if ! [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::digest '$DIGEST' is not image.yml's digest output (sha256:…)"
+            exit 1
+          fi
+          if ! [[ $ARTIFACT =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::artifact '$ARTIFACT' is not image.yml's artifact output"
+            exit 1
+          fi
+          {
+            echo "name=ghcr.io/${OWNER,,}/$image"
+            echo "version=$version"
+            echo "digest=$DIGEST"
+          } >> "$GITHUB_OUTPUT"
+      # From this run only: image.yml's build, earlier in the same release run.
+      - name: Get the image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/image
+      # Before the registry login. An OCI layout is addressed by content: the index
+      # names the image index blob by digest, and that blob names every other blob,
+      # so an index with the recorded digest and blobs that each match their name
+      # are the image that image.yml built and smoke-tested, byte for byte.
+      - name: Verify the digest
+        env:
+          LAYOUT: ${{ runner.temp }}/image
+          DIGEST: ${{ steps.check.outputs.digest }}
+        run: |
+          if [ "$(jq '.manifests | length' "$LAYOUT/index.json")" != 1 ]; then
+            echo "::error::the artifact should hold one image index"
+            exit 1
+          fi
+          found=$(jq -r '.manifests[0].digest' "$LAYOUT/index.json")
+          if [ "$found" != "$DIGEST" ]; then
+            echo "::error::the artifact's image is $found, not $DIGEST, the digest image.yml recorded"
+            exit 1
+          fi
+          cd "$LAYOUT/blobs/sha256"
+          if [ ! -f "${DIGEST#sha256:}" ]; then
+            echo "::error::the artifact has no blob for $DIGEST"
+            exit 1
+          fi
+          for blob in *; do
+            if ! [[ $blob =~ ^[0-9a-f]{64}$ ]] || [ ! -f "$blob" ] || [ -L "$blob" ]; then
+              echo "::error::unexpected entry '$blob' in the artifact's blobs"
+              exit 1
+            fi
+          done
+          for blob in *; do echo "$blob  $blob"; done | sha256sum --check --strict --quiet
+      # The SBOM BuildKit attached, read from the verified layout, so the SBOM
+      # attestation describes exactly the image pushed below: its attestation
+      # manifest's in-toto statement with the SPDX predicate.
+      - name: The SBOM, from the image
+        env:
+          LAYOUT: ${{ runner.temp }}/image
+          DIGEST: ${{ steps.check.outputs.digest }}
+        run: |
+          blobs=$LAYOUT/blobs/sha256
+          attestation=$(jq -r 'first(.manifests[]
+            | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")
+            | .digest) // empty' "$blobs/${DIGEST#sha256:}")
+          if [ -z "$attestation" ]; then
+            echo "::error::the image has no attestation manifest; was it built by image.yml?"
+            exit 1
+          fi
+          statement=$(jq -r 'first(.layers[]
+            | select(.annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document")
+            | .digest) // empty' "$blobs/${attestation#sha256:}")
+          if [ -z "$statement" ]; then
+            echo "::error::the image has no SPDX SBOM"
+            exit 1
+          fi
+          jq '.predicate' "$blobs/${statement#sha256:}" > "$RUNNER_TEMP/sbom.spdx.json"
+          jq -e '.spdxVersion' "$RUNNER_TEMP/sbom.spdx.json" # fails on a statement without one (null)
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # Every manifest as it is, attestation manifests included; skopeo fails rather
+      # than rewrite one, so the registry gets the digest that was checked. No
+      # `latest`: a deployment pins the version it runs.
+      - name: Push
+        env:
+          LAYOUT: ${{ runner.temp }}/image
+          NAME: ${{ steps.check.outputs.name }}
+          VERSION: ${{ steps.check.outputs.version }}
+          DIGEST: ${{ steps.check.outputs.digest }}
+        run: |
+          auth=${DOCKER_CONFIG:-$HOME/.docker}/config.json
+          skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" \
+            "oci:$LAYOUT" "docker://$NAME:$VERSION"
+          skopeo inspect --raw --authfile "$auth" "docker://$NAME:$VERSION" > "$RUNNER_TEMP/pushed.json"
+          pushed=sha256:$(sha256sum < "$RUNNER_TEMP/pushed.json" | cut -d' ' -f1)
+          if [ "$pushed" != "$DIGEST" ]; then
+            echo "::error::$NAME:$VERSION is $pushed in the registry, not $DIGEST"
+            exit 1
+          fi
+      # Signed attestations, by digest, stored in the caller's repository and pushed
+      # to the registry next to the image. A reusable workflow signs as itself, so
+      # they name this file as the signer workflow (README, Verifying an image). No
+      # storage record: it would need artifact-metadata: write, for an organisation
+      # view nothing here uses.
+      - name: Attest the provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.check.outputs.name }}
+          subject-digest: ${{ steps.check.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.check.outputs.name }}
+          subject-digest: ${{ steps.check.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Summary
+        env:
+          NAME: ${{ steps.check.outputs.name }}
+          VERSION: ${{ steps.check.outputs.version }}
+          DIGEST: ${{ steps.check.outputs.digest }}
+        run: |
+          {
+            echo "Published \`$NAME:$VERSION\` (\`$DIGEST\`). Verify it with:"
+            echo
+            echo '```sh'
+            echo "gh attestation verify oci://$NAME:$VERSION \\"
+            echo "  --repo $GITHUB_REPOSITORY --source-ref $GITHUB_REF \\"
+            echo "  --signer-workflow those-who-run/.github/.github/workflows/image-publish.yml"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

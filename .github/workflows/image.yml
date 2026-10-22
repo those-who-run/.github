@@ -1,19 +1,18 @@
 name: Image
 
-# Builds a repository's container image and smoke-tests it; with `push: true`, from a
-# vX.Y.Z tag, also publishes it as ghcr.io/those-who-run/twr-<repo>:X.Y.Z with
-# BuildKit's SLSA provenance and SPDX SBOM, and attests both. Callers, inputs and how
-# to verify an image: .github/workflows/README.md.
+# Builds a repository's container image once, smoke-tests it and hands it on as an
+# OCI layout artifact, with the digest a publishing run must find. Pushes nothing:
+# image-publish.yml, called after this in a release run on a vX.Y.Z tag, pushes and
+# attests that exact image. Callers, inputs and how to verify an image:
+# .github/workflows/README.md.
 #
-# Job names are stable, because rulesets require checks by name
-# (`<caller job> / <reusable job>`); renaming one leaves every caller's `main` waiting
+# The job name is stable, because rulesets require checks by name
+# (`<caller job> / <reusable job>`); renaming it leaves every caller's `main` waiting
 # for a check that never reports:
-#   build    every run: checks the inputs (and, with `push`, the tag), builds the
-#            image for one platform, smoke-tests it, pushes nothing. With the caller
-#            job named `image`, the PR check is `image / build`.
-#   publish  only with `push`, after build: in the caller's `release` environment,
-#            builds again, smoke-tests, pushes and attests. The only job with
-#            packages, id-token and attestations write.
+#   build    checks the inputs, builds the image for one platform with its final
+#            labels, annotations, provenance and SBOM, records its digest, smoke-tests
+#            it and uploads it. With the caller job named `image`, the PR check is
+#            `image / build`. Reads the repository, nothing more.
 on:
   workflow_call:
     inputs:
@@ -40,17 +39,20 @@ on:
           docker run --rm "$IMAGE" --version
         type: string
         required: true
-      push:
-        description: Publish the image. Only from a vX.Y.Z tag; any other ref fails before building.
-        type: boolean
-        default: false
     outputs:
+      image:
+        description: The image's full name, ghcr.io/<owner>/<image>.
+        value: ${{ jobs.build.outputs.image }}
       digest:
-        description: The published image's digest (sha256:…), empty without `push`.
-        value: ${{ jobs.publish.outputs.digest }}
+        description: The built image's digest (sha256:…), recorded before the smoke test ran.
+        value: ${{ jobs.build.outputs.digest }}
+      artifact:
+        description: The name of the artifact holding the image as an OCI layout, for image-publish.yml.
+        value: ${{ jobs.build.outputs.artifact }}
 
-# Nothing by default; each job asks for what it uses. The caller's job grants the
-# ceiling, and these narrow it, so only publish ever holds a write token.
+# Nothing by default; the job asks for what it uses, and the caller's job grants the
+# ceiling. Publishing lives in image-publish.yml, so callers of this one grant no
+# write permission at all.
 permissions: {}
 
 # Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
@@ -60,183 +62,136 @@ jobs:
     permissions:
       contents: read
     outputs:
-      name: ${{ steps.inputs.outputs.name }}
-      version: ${{ steps.inputs.outputs.version }}
+      image: ${{ steps.inputs.outputs.name }}
+      digest: ${{ steps.digest.outputs.digest }}
+      artifact: ${{ steps.inputs.outputs.artifact }}
     steps:
-      # First, so a publish from a branch or a PR fails before anything is built.
       # Everything a caller or the event controls comes in through env:, never
       # expanded into the script.
       - name: Check the inputs
         id: inputs
         env:
-          PUSH: ${{ inputs.push }}
           IMAGE_INPUT: ${{ inputs.image }}
           PLATFORMS: ${{ inputs.platforms }}
           REF: ${{ github.ref }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           OWNER: ${{ github.repository_owner }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
         run: |
           image=${IMAGE_INPUT:-twr-${GITHUB_REPOSITORY#*/}}
           if ! [[ $image =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
             echo "::error::image name '$image' is not a lower-case OCI repository name"
             exit 1
           fi
-          # A loaded image has one platform, and the SBOM attested is that one's.
-          if ! [[ $PLATFORMS =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then
+          # The smoke test loads one platform, and the SBOM attested is that one's.
+          if ! [[ $PLATFORMS =~ ^([a-z0-9]+)/([a-z0-9]+)(/([a-z0-9]+))?$ ]]; then
             echo "::error::platforms must name exactly one platform, such as linux/amd64, not '$PLATFORMS'"
             exit 1
           fi
+          os=${BASH_REMATCH[1]} arch=${BASH_REMATCH[2]} variant=${BASH_REMATCH[4]}
+          # On a release tag the image gets its version now, so the image published
+          # from this build carries it; a PR build has none.
           version=""
-          if [ "$PUSH" = true ]; then
-            if [ "$REF_TYPE" != tag ] || [ "$REF" != "refs/tags/$REF_NAME" ]; then
-              echo "::error::push: true runs only from a vX.Y.Z tag, not $REF"
-              exit 1
-            fi
-            if ! [[ $REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
-              echo "::error::tag $REF_NAME is not vX.Y.Z (or vX.Y.Z-pre)"
-              exit 1
-            fi
+          if [ "$REF_TYPE" = tag ] && [ "$REF" = "refs/tags/$REF_NAME" ] \
+            && [[ $REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
             version=${BASH_REMATCH[1]}
           fi
           {
             echo "name=ghcr.io/${OWNER,,}/$image"
-            echo "version=$version"
+            echo "tag=${version:-build}"
+            echo "artifact=oci-image-$image"
+            echo "os=$os"
+            echo "arch=$arch"
+            echo "variant=$variant"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.source=$SOURCE"
+            echo "org.opencontainers.image.revision=$REVISION"
+            if [ -n "$version" ]; then echo "org.opencontainers.image.version=$version"; fi
+            echo "EOF"
+            echo "annotations<<EOF"
+            echo "index:org.opencontainers.image.source=$SOURCE"
+            echo "index:org.opencontainers.image.revision=$REVISION"
+            if [ -n "$version" ]; then echo "index:org.opencontainers.image.version=$version"; fi
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # The Actions cache speeds up PR builds; a run that leads to a publish reads
-      # none, so nothing another run wrote reaches a published image.
-      - name: Build (no push)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
-          platforms: ${{ inputs.platforms }}
-          push: false
-          load: true
-          tags: ${{ steps.inputs.outputs.name }}:smoke
-          cache-from: ${{ !inputs.push && 'type=gha' || '' }}
-          cache-to: ${{ !inputs.push && 'type=gha,mode=max' || '' }}
-      # The caller's command, from env:, so its text is never expanded into a script.
-      - name: Smoke test
-        env:
-          IMAGE: ${{ steps.inputs.outputs.name }}:smoke
-          SMOKE: ${{ inputs.smoke }}
-        run: bash -euo pipefail -c "$SMOKE"
-
-  publish:
-    needs: build
-    if: inputs.push
-    runs-on: ubuntu-latest
-    # The maintainer approves each publish there (a required reviewer), and the
-    # environment's deployment rules keep it to tags.
-    environment: release
-    permissions:
-      contents: read
-      packages: write # the push to ghcr.io with this job's token: no registry secret
-      id-token: write # the OIDC token Sigstore signs the attestations with
-      attestations: write # stores the attestations in the caller's repository
-    # One publish per ref at a time, never cancelled half-pushed.
-    concurrency:
-      group: image-publish-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: false
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
-    env:
-      NAME: ${{ needs.build.outputs.name }}
-      VERSION: ${{ needs.build.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # Built and smoke-tested again here, before the registry login, so what is
-      # pushed below comes from the layers this job tested, and the smoke command
-      # never runs with registry credentials on disk. No Actions cache.
+      # The one build: BuildKit's SLSA provenance and an SPDX SBOM go into the image
+      # index, written as an OCI layout, which is what gets smoke-tested and what
+      # image-publish.yml pushes. The source label and annotation link the package to
+      # the calling repository on GitHub (the label on the image, the annotation on
+      # the index the attestations make). The Actions cache speeds up PR builds; a
+      # build on a tag, which a release publishes, reads none, so nothing another
+      # run wrote reaches a published image.
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
           platforms: ${{ inputs.platforms }}
-          push: false
-          load: true
-          tags: ${{ env.NAME }}:smoke
-      - name: Smoke test
-        env:
-          IMAGE: ${{ env.NAME }}:smoke
-          SMOKE: ${{ inputs.smoke }}
-        run: bash -euo pipefail -c "$SMOKE"
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      # BuildKit attaches its SLSA provenance and an SPDX SBOM to the image index.
-      # The source label and annotation link the package to the calling repository
-      # on GitHub (the label on the image, the annotation on the index that the
-      # attestations make). No `latest`: a deployment pins the version it runs.
-      - name: Push
-        id: push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
-          platforms: ${{ inputs.platforms }}
-          push: true
+          outputs: type=oci,dest=${{ runner.temp }}/image,tar=false
           provenance: mode=max
           sbom: true
-          tags: ${{ env.NAME }}:${{ env.VERSION }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.VERSION }}
-          annotations: |
-            index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            index:org.opencontainers.image.revision=${{ github.sha }}
-            index:org.opencontainers.image.version=${{ env.VERSION }}
-      # The SBOM BuildKit attached, read back from the pushed image, so the SBOM
-      # attestation describes exactly what was pushed.
-      - name: The SBOM, from the pushed image
+          tags: ${{ steps.inputs.outputs.name }}:${{ steps.inputs.outputs.tag }}
+          labels: ${{ steps.inputs.outputs.labels }}
+          annotations: ${{ steps.inputs.outputs.annotations }}
+          cache-from: ${{ github.ref_type != 'tag' && 'type=gha' || '' }}
+          cache-to: ${{ github.ref_type != 'tag' && 'type=gha,mode=max' || '' }}
+      # Recorded before the caller's command runs, as this step's output, which no
+      # later step can rewrite: image-publish.yml pushes only a layout whose index
+      # has this digest, so a smoke command that changed the files would stop the
+      # release rather than reach the registry.
+      - name: Record the digest
+        id: digest
         env:
-          DIGEST: ${{ steps.push.outputs.digest }}
+          LAYOUT: ${{ runner.temp }}/image
         run: |
-          docker buildx imagetools inspect "$NAME@$DIGEST" \
-            --format '{{ json .SBOM.SPDX }}' > "$RUNNER_TEMP/sbom.spdx.json"
-          jq -e '.spdxVersion' "$RUNNER_TEMP/sbom.spdx.json" # fails on an image without one (null)
-      # Signed attestations, by digest, stored in the caller's repository and pushed
-      # to the registry next to the image. A reusable workflow signs as itself, so
-      # they name this file as the signer workflow (README, Verifying an image). No
-      # storage record: it would need artifact-metadata: write, for an organisation
-      # view nothing here uses.
-      - name: Attest the provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ env.NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-      - name: Attest the SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ env.NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          sbom-path: ${{ runner.temp }}/sbom.spdx.json
-          push-to-registry: true
-          create-storage-record: false
-      - name: Summary
+          if [ "$(jq '.manifests | length' "$LAYOUT/index.json")" != 1 ]; then
+            echo "::error::the OCI layout should hold one image index"
+            exit 1
+          fi
+          digest=$(jq -r '.manifests[0].digest' "$LAYOUT/index.json")
+          if ! [[ $digest =~ ^sha256:([0-9a-f]{64})$ ]]; then
+            echo "::error::unexpected digest '$digest'"
+            exit 1
+          fi
+          echo "${BASH_REMATCH[1]}  $LAYOUT/blobs/sha256/${BASH_REMATCH[1]}" | sha256sum --check --strict --quiet
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Built \`$digest\`." >> "$GITHUB_STEP_SUMMARY"
+      # Docker gets the image from the layout itself, so the smoke test runs what is
+      # handed on, not a second build. Through a docker-archive file and
+      # `docker load`, since the runner's skopeo may be older than the Docker API it
+      # would have to speak to load the image directly.
+      - name: Load the image
         env:
-          DIGEST: ${{ steps.push.outputs.digest }}
+          LAYOUT: ${{ runner.temp }}/image
+          IMAGE: ${{ steps.inputs.outputs.name }}:smoke
+          OS: ${{ steps.inputs.outputs.os }}
+          ARCH: ${{ steps.inputs.outputs.arch }}
+          VARIANT: ${{ steps.inputs.outputs.variant }}
         run: |
-          {
-            echo "Published \`$NAME:$VERSION\` (\`$DIGEST\`). Verify it with:"
-            echo
-            echo '```sh'
-            echo "gh attestation verify oci://$NAME:$VERSION \\"
-            echo "  --repo $GITHUB_REPOSITORY --source-ref $GITHUB_REF \\"
-            echo "  --signer-workflow those-who-run/.github/.github/workflows/image.yml"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          skopeo copy --override-os "$OS" --override-arch "$ARCH" \
+            ${VARIANT:+--override-variant "$VARIANT"} \
+            "oci:$LAYOUT" "docker-archive:$RUNNER_TEMP/smoke.tar:$IMAGE"
+          docker load --input "$RUNNER_TEMP/smoke.tar"
+          rm "$RUNNER_TEMP/smoke.tar"
+      # The caller's command, from env:, so its text is never expanded into a script.
+      - name: Smoke test
+        env:
+          IMAGE: ${{ steps.inputs.outputs.name }}:smoke
+          SMOKE: ${{ inputs.smoke }}
+        run: bash -euo pipefail -c "$SMOKE"
+      # Kept long enough on a tag for the release environment's approval, which can
+      # wait up to 30 days; a PR's copy only shows the hand-over works.
+      - name: Hand the image on
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.inputs.outputs.artifact }}
+          path: ${{ runner.temp }}/image
+          if-no-files-found: error
+          retention-days: ${{ github.ref_type == 'tag' && 30 || 1 }}
+          compression-level: 0 # the layers are compressed already

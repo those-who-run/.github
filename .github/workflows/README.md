@@ -344,48 +344,71 @@ dispatches CI on it: the release PR's required checks then report. A merge by th
 by a person, never by a workflow or auto-merge (v1's 0.7.6), and `auto-merge-off`
 keeps auto-merge off.
 
-## image.yml
+## image.yml and image-publish.yml
 
-Builds a repository's container image from its Dockerfile and smoke-tests it. With
-`push: true`, from a `vX.Y.Z` tag, it also publishes
-`ghcr.io/those-who-run/twr-<repo>:X.Y.Z` with BuildKit's SLSA provenance
-(`mode=max`) and an SPDX SBOM, and attests both with GitHub's artifact attestations.
-Base images are pinned by digest in the caller's Dockerfile; this workflow doesn't
-override them.
+Two workflows, so that only a release ever holds a write token and what is pushed
+is exactly what was tested:
 
-### Inputs
+- `image.yml` builds a repository's container image from its Dockerfile, once, with
+  its final labels, annotations, BuildKit's SLSA provenance (`mode=max`) and an
+  SPDX SBOM. It records the image's digest, smoke-tests the image and hands it on as
+  an OCI layout artifact. It pushes nothing and only reads the repository. Pull
+  requests call it, and so does the release workflow.
+- `image-publish.yml`, called by the release workflow after `image.yml`, on a
+  `vX.Y.Z` tag: it takes that artifact, checks it is the image with the recorded
+  digest, pushes it as `ghcr.io/those-who-run/twr-<repo>:X.Y.Z` and attests that
+  digest's provenance and SBOM with GitHub's artifact attestations. It builds
+  nothing and runs no command from the calling repository.
+
+Base images are pinned by digest in the caller's Dockerfile; neither workflow
+overrides them.
+
+### Inputs and outputs
+
+`image.yml`:
 
 | Input | Default | What it is |
 | --- | --- | --- |
 | `smoke` | (required) | A bash command run from the repository root against the built image, which is named in `$IMAGE`. A non-zero exit fails the job. |
-| `push` | `false` | Publish the image. Only from a `vX.Y.Z` (or `vX.Y.Z-pre`) tag; any other ref fails before anything is built. |
 | `image` | `twr-<repo>` | The image's name under `ghcr.io/those-who-run/`. |
 | `context` | `.` | The build context. |
 | `dockerfile` | `<context>/Dockerfile` | The Dockerfile. |
 | `platforms` | `linux/amd64` | The one platform to build for. |
 
-Output: `digest`, the published image's digest, empty without `push`.
+Outputs: `image` (the full name), `digest` (the built image's digest, recorded
+before the smoke test ran) and `artifact` (the name of the artifact holding the
+image).
+
+`image-publish.yml`:
+
+| Input | Default | What it is |
+| --- | --- | --- |
+| `digest` | (required) | `image.yml`'s `digest` output from the same run. |
+| `artifact` | (required) | `image.yml`'s `artifact` output from the same run. |
+| `image` | `twr-<repo>` | The same name given to `image.yml`. |
+
+Output: `digest`, the published image's digest.
 
 ### Jobs
 
-- `build`: every run. Checks the inputs (and, with `push`, the tag), builds the
-  image without pushing and runs the smoke command. With the caller's job named
-  `image`, the PR check a ruleset requires is `image / build`.
-- `publish`: only with `push`, after `build`. Runs in the caller's `release`
-  environment, so it waits for the maintainer's approval. Builds and smoke-tests
-  again, then pushes with its own `GITHUB_TOKEN` (no registry secret) and attests
-  the provenance and the SBOM, stored in the caller's repository and pushed to the
-  registry next to the image. It is the only job with `packages: write`,
-  `id-token: write` and `attestations: write`.
+- `image.yml`'s `build`: checks the inputs, builds the image into an OCI layout,
+  records its digest as a job output, loads that layout into Docker and runs the
+  smoke command, then uploads the layout. With the caller's job named `image`, the
+  PR check a ruleset requires is `image / build`. Only `contents: read`. On a tag
+  it uses no Actions cache, so nothing another run wrote reaches a published image.
+- `image-publish.yml`'s `publish`: only from a `vX.Y.Z` (or `vX.Y.Z-pre`) tag; any
+  other ref fails at its first step. Runs in the caller's `release` environment, so
+  it waits for the maintainer's approval. Downloads the artifact, checks that its
+  index has the recorded digest and that every blob matches its own digest, pushes
+  every manifest unchanged with its own `GITHUB_TOKEN` (no registry secret), checks
+  the registry has that digest, and attests the provenance and the SBOM, stored in
+  the caller's repository and pushed to the registry next to the image. It is the
+  only job with `packages: write`, `id-token: write` and `attestations: write`.
 
-### Calling it
+### Calling them
 
-The calling job grants the ceiling and each reusable job narrows it, so `build`
-only ever reads the repository. Both callers grant the publishing set: GitHub
-checks a called workflow's permissions against its caller's when the run starts,
-including those of a job its condition will skip.
-
-On a pull request:
+Each calling job grants the ceiling and the reusable job narrows it. On a pull
+request, `image.yml` alone, with read access only:
 
 ```yaml
 permissions: {}
@@ -394,20 +417,16 @@ jobs:
   image:
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
     uses: those-who-run/.github/.github/workflows/image.yml@<sha> # vX.Y.Z
     with:
       smoke: docker run --rm "$IMAGE" --version
 ```
 
-On a release, the same call with `push: true`, from a run on the tag. A called
-workflow sees its caller's ref, so the run that calls this one is started on the
-tag: once release-please has tagged, its workflow dispatches the repository's
-release workflow with `--ref vX.Y.Z`. A `workflow_dispatch` made with the
-`GITHUB_TOKEN` starts a run; it needs `actions: write`. In the release-please
-workflow, after the release-please job:
+On a release, both, from a run on the tag. A called workflow sees its caller's ref,
+so the run that calls them is started on the tag: once release-please has tagged,
+its workflow dispatches the repository's release workflow with `--ref vX.Y.Z`. A
+`workflow_dispatch` made with the `GITHUB_TOKEN` starts a run; it needs
+`actions: write`. In the release-please workflow, after the release-please job:
 
 ```yaml
   release:
@@ -424,8 +443,9 @@ workflow, after the release-please job:
         run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
 ```
 
-The release workflow, `release.yml`, then runs on `refs/tags/vX.Y.Z` and calls this
-one:
+The release workflow, `release.yml`, then runs on `refs/tags/vX.Y.Z`, builds and
+smoke-tests with `image.yml`, and publishes that build with `image-publish.yml`,
+both pinned at the same SHA:
 
 ```yaml
 on:
@@ -437,39 +457,49 @@ jobs:
   image:
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
     uses: those-who-run/.github/.github/workflows/image.yml@<sha> # vX.Y.Z
     with:
       smoke: docker run --rm "$IMAGE" --version
-      push: true
+  publish:
+    needs: image
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: those-who-run/.github/.github/workflows/image-publish.yml@<sha> # vX.Y.Z
+    with:
+      digest: ${{ needs.image.outputs.digest }}
+      artifact: ${{ needs.image.outputs.artifact }}
 ```
 
-Dispatched on anything but a `vX.Y.Z` tag, `build` fails before building. The
-calling repository needs a `release` environment (the maintainer as required
-reviewer, deployments limited to `v*` tags).
+`build` runs before the `release` environment asks for approval, so a broken image
+never reaches the approval prompt. The artifact is kept 30 days on a tag, the
+longest an approval can wait. Dispatched on anything but a `vX.Y.Z` tag, `publish`
+fails before it downloads anything. The calling repository needs a `release`
+environment (the maintainer as required reviewer, deployments limited to `v*`
+tags).
 
 ### Images
 
 Each image carries `org.opencontainers.image.source` (as a label on the image and
 an annotation on its index) pointing at the calling repository, so its package on
-GitHub links to that repository, plus `org.opencontainers.image.revision` and
-`org.opencontainers.image.version`. There is no `latest` tag: a deployment pins the
-version it runs. A new package is private until the maintainer makes it public,
-once, after its first push.
+GitHub links to that repository, plus `org.opencontainers.image.revision` and, when
+built on a tag, `org.opencontainers.image.version`. There is no `latest` tag: a
+deployment pins the version it runs. A new package is private until the maintainer
+makes it public, once, after its first push.
 
 ### Verifying an image
 
 A reusable workflow signs its attestations as itself, not as the calling
-workflow, so name it as the signer. `--repo` and `--source-ref` require the
-attestation to come from that repository's release tag:
+workflow, so name the publishing workflow as the signer. `--repo` and
+`--source-ref` require the attestation to come from that repository's release tag:
 
 ```sh
 gh attestation verify oci://ghcr.io/those-who-run/twr-<repo>:X.Y.Z \
   --repo those-who-run/<repo> \
   --source-ref refs/tags/vX.Y.Z \
-  --signer-workflow those-who-run/.github/.github/workflows/image.yml
+  --signer-workflow those-who-run/.github/.github/workflows/image-publish.yml
 ```
 
 That checks the build provenance. Add
