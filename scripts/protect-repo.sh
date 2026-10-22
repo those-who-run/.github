@@ -4,26 +4,39 @@
 # what an organisation ruleset would do on GitHub Team. Safe to run again: it
 # updates the rulesets it made before instead of adding new ones.
 #
-#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--no-actions]
+#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--approvals N] [--no-actions]
 #
 # --checks   status checks `main` must pass (from GitHub Actions only). Leave it
 #            out for a repo with no CI; `main` still needs a pull request.
+# --approvals   approving reviews a pull request needs before it merges (default
+#               0). Use 1 where an agent's bot account opens PRs, so they wait
+#               for a person; admins can still merge their own PRs through the
+#               bypass. A push after the approval needs a new one. Leave it at 0
+#               where Dependabot or release-please PRs merge without a person.
 # --no-actions  turn Actions off (repos with no workflows, like outings).
 #
 # Needs: gh, logged in as an admin of the repository.
 set -euo pipefail
 
-repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--no-actions]}
+repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--approvals N] [--no-actions]}
 shift
 checks=""
+approvals=0
 actions=on
 while [ $# -gt 0 ]; do
   case "$1" in
     --checks) checks=$2; shift 2 ;;
+    --approvals) approvals=$2; shift 2 ;;
     --no-actions) actions=off; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$approvals" in
+  ''|*[!0-9]*) echo "--approvals takes a number: $approvals" >&2; exit 2 ;;
+esac
+# With reviews required, an approval is dropped by a later push and must come after it.
+fresh_review=$([ "$approvals" -gt 0 ] && echo true || echo false)
 
 say() { printf '%s: %s\n' "$repo" "$*"; }
 
@@ -50,13 +63,14 @@ if [ "$check_json" != "[]" ]; then
 fi
 
 # main: changes arrive by squashed pull request; no force-push, no deletion.
-# Admins may bypass only through a pull request (release-please's PRs get no CI).
+# Admins may bypass only through a pull request (release-please's PRs get no CI),
+# which also lets them merge their own PRs when --approvals asks for reviews.
 ruleset main <<EOF2
 {"name":"main","target":"branch","enforcement":"active",
  "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
  "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}],
  "rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"required_linear_history"},
-  {"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":false,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["squash"]}}
+  {"type":"pull_request","parameters":{"required_approving_review_count":$approvals,"dismiss_stale_reviews_on_push":$fresh_review,"require_code_owner_review":false,"require_last_push_approval":$fresh_review,"required_review_thread_resolution":false,"allowed_merge_methods":["squash"]}}
   $status_rule]}
 EOF2
 
