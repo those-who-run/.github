@@ -4,7 +4,7 @@
 # what an organisation ruleset would do on GitHub Team. Safe to run again: it
 # updates the rulesets it made before instead of adding new ones.
 #
-#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--approvals N] [--no-actions]
+#   scripts/protect-repo.sh those-who-run/<repo> [--checks "test image"] [--approvals N] [--code-owners] [--no-actions]
 #
 # --checks   status checks `main` must pass (from GitHub Actions only). Leave it
 #            out for a repo with no CI; `main` still needs a pull request.
@@ -13,20 +13,29 @@
 #               for a person; admins can still merge their own PRs through the
 #               bypass. A push after the approval needs a new one. Leave it at 0
 #               where Dependabot or release-please PRs merge without a person.
+# --code-owners require a code owner's approval (.github/CODEOWNERS, read from the
+#               base branch) on top of --approvals (default off). Use it where
+#               "Allow GitHub Actions to create and approve pull requests" is to be
+#               turned on, for release-please: an approval by github-actions[bot] or
+#               an agent's bot account then counts for nothing, since neither is a
+#               code owner. This script never turns that setting on, and turns it off
+#               each time it runs; the maintainer turns it on by hand afterwards.
 # --no-actions  turn Actions off (repos with no workflows, like outings).
 #
 # Needs: gh, logged in as an admin of the repository.
 set -euo pipefail
 
-repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--approvals N] [--no-actions]}
+repo=${1:?usage: protect-repo.sh <owner/repo> [--checks "a b"] [--approvals N] [--code-owners] [--no-actions]}
 shift
 checks=""
 approvals=0
+code_owners=false
 actions=on
 while [ $# -gt 0 ]; do
   case "$1" in
     --checks) checks=$2; shift 2 ;;
     --approvals) approvals=$2; shift 2 ;;
+    --code-owners) code_owners=true; shift ;;
     --no-actions) actions=off; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -70,7 +79,7 @@ ruleset main <<EOF2
  "conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},
  "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}],
  "rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"required_linear_history"},
-  {"type":"pull_request","parameters":{"required_approving_review_count":$approvals,"dismiss_stale_reviews_on_push":$fresh_review,"require_code_owner_review":false,"require_last_push_approval":$fresh_review,"required_review_thread_resolution":false,"allowed_merge_methods":["squash"]}}
+  {"type":"pull_request","parameters":{"required_approving_review_count":$approvals,"dismiss_stale_reviews_on_push":$fresh_review,"require_code_owner_review":$code_owners,"require_last_push_approval":$fresh_review,"required_review_thread_resolution":false,"allowed_merge_methods":["squash"]}}
   $status_rule]}
 EOF2
 

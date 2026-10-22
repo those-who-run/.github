@@ -2,9 +2,9 @@ version: 2
 # Version updates for what this repository pins. Nothing here is auto-merged: these
 # workflows run in every repository's CI, so each bump is reviewed.
 # Commits are `deps: ...`, which release-please lists under "Dependencies".
-# Every ecosystem has a cooldown: a release must be 7 days old before it is offered,
-# so one pulled for being malicious never reaches a PR (zizmor's dependabot-cooldown
-# audit).
+# Every ecosystem has a cooldown: a release must be 7 days old before it is offered
+# (14 for the commit hooks), so one pulled for being malicious never reaches a PR
+# (zizmor's dependabot-cooldown audit).
 # Provisional: those-who-run/paddock#22 chooses between Dependabot and Renovate for
 # the organisation, and this file follows that choice.
 updates:
@@ -22,16 +22,17 @@ updates:
         update-types: [minor, patch]
   # The hooks pinned by SHA in .pre-commit-config.yaml (the tag in the `frozen:`
   # comment, which Dependabot keeps). They run code on the maintainer's machine at
-  # every commit.
+  # every commit, hence the longer cooldown, as in v1.
   - package-ecosystem: pre-commit
     directory: /
     schedule:
       interval: weekly
     cooldown:
-      default-days: 7
+      default-days: 14
     commit-message:
       prefix: deps
-  # pre-commit itself, which CI installs from .github/requirements-ci.txt.
+  # pre-commit and its dependencies, which CI installs, hash-checked, from
+  # .github/requirements-ci.txt.
   - package-ecosystem: pip
     directory: /.github
     schedule:

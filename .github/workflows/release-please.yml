@@ -12,8 +12,15 @@ name: Release PR
 # footer sets the version by hand.
 #
 # Tokens: release-please uses the GITHUB_TOKEN, so no PAT or App key with write
-# access to this repository is needed. A PR that token opens starts no workflow, so
-# the release-pr job dispatches CI on the release branch for its required check.
+# access to this repository is needed. For that token to open the release PR, the
+# repository needs "Allow GitHub Actions to create and approve pull requests" on.
+# That one setting also lets a workflow's token approve a PR, so it is turned on by
+# hand only after `main`'s ruleset requires code-owner review
+# (scripts/protect-repo.sh --code-owners): then only a code owner's approval counts
+# (.github/CODEOWNERS, read from the base branch), and neither github-actions[bot]
+# nor an agent's bot account is one. protect-repo.sh turns the setting off again
+# whenever it runs. A PR that token opens starts no workflow, so the release-pr job
+# dispatches CI on the release branch for its required check.
 #
 # Who merges: the maintainer, by hand. Never auto-merge: armed here, the merge would
 # be the GITHUB_TOKEN's push, which starts no workflow, so the release would never be
@@ -53,14 +60,12 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # CI for the release PR, and auto-merge kept off, whenever release-please opened or
-  # updated it in this run.
+  # CI for the release PR whenever release-please opened or updated it in this run.
   release-pr:
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true'
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write # turns off auto-merge if someone armed it
       actions: write # dispatches CI on the release branch
     env:
       GH_TOKEN: ${{ github.token }}
@@ -70,9 +75,26 @@ jobs:
         run: |
           branch=$(jq -r '.headBranchName' <<<"$PR")
           gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+
+  # Auto-merge kept off on every run, not only when release-please touched the PR:
+  # auto-merge armed after the PR's last update would otherwise stay armed. The open
+  # release PR is found by its `autorelease: pending` label, as in v1.
+  auto-merge-off:
+    needs: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # turns off auto-merge if someone armed it
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
       - name: Auto-merge off
         run: |
-          number=$(jq -r '.number' <<<"$PR")
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --label "autorelease: pending" --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            echo "No open release PR." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           armed=$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" \
             --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$armed" = "true" ]; then

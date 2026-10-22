@@ -4,7 +4,8 @@
 # web hooks, plus shellcheck for scripts/.
 #
 # The external hooks are pinned to a commit SHA, the tag in the `frozen:` comment;
-# Dependabot bumps them (.github/dependabot.yml).
+# Dependabot bumps them (.github/dependabot.yml). The `hook-pins` hook below checks
+# this, so a hand edit to `rev: vX.Y.Z` fails.
 default_install_hook_types: [pre-commit, commit-msg]
 default_stages: [pre-commit, manual]
 # release-please writes the changelog; nobody edits it by hand.
@@ -31,6 +32,14 @@ repos:
         entry: sh -c 'cmp agent/guard.py .claude/hooks/guard.py && cmp agent/settings.json .claude/settings.json'
         language: system
         files: ^(agent/(guard\.py|settings\.json)|\.claude/(hooks/guard\.py|settings\.json))$
+        pass_filenames: false
+      # Every external hook below is pinned to a commit SHA with a `frozen:` comment
+      # (tests/test_precommit_config.py, which CI's `test` job also runs).
+      - id: hook-pins
+        name: external hooks pinned to a commit SHA (frozen)
+        entry: python3 -m unittest discover tests
+        language: system
+        files: ^(\.pre-commit-config\.yaml|tests/.*\.py)$
         pass_filenames: false
 
   # gitleaks: the staged changes, before they are committed. In `--all-files` runs

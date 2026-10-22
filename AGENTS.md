@@ -19,6 +19,7 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
   pre-commit install
   pre-commit run --all-files
   python3 -m unittest discover agent/tests
+  python3 -m unittest discover tests
   ```
 
 - A change to the guard or the settings is made in `agent/` and copied unchanged to
