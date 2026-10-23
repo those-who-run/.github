@@ -55,7 +55,7 @@ on:
 # write permission at all.
 permissions: {}
 
-# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+# Actions are pinned by commit SHA (the tag in the comment); Renovate bumps them.
 jobs:
   build:
     runs-on: ubuntu-latest

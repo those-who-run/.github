@@ -23,7 +23,7 @@ name: Checks
 # pre-commit itself (hash-pinned in .github/requirements-ci.txt) and the gitleaks
 # hook for the PR's commits (in .pre-commit-config.yaml) come from this repository
 # at the commit the caller pinned, so every caller scans with the same, reviewed
-# versions and Dependabot bumps them in one place. The commit hooks on every file
+# versions and Renovate bumps them in one place. The commit hooks on every file
 # are the caller's own, from its .pre-commit-config.yaml.
 #
 # Changing an input (adding a required one, removing or renaming one, or changing
@@ -63,7 +63,7 @@ on:
 # Nothing by default; the job asks for what it uses.
 permissions: {}
 
-# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+# Actions are pinned by commit SHA (the tag in the comment); Renovate bumps them.
 jobs:
   checks:
     runs-on: ubuntu-latest

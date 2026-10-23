@@ -1,0 +1,5 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "This repository's own updates. It extends the preset it publishes from main, unpinned, unlike every other repository: a preset change applies here first, at Renovate's next run after the merge, before any repository bumps its pin to the release.",
+  "extends": ["github>those-who-run/.github"]
+}

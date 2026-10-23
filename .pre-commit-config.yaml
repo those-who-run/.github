@@ -5,8 +5,8 @@
 # scripts/.
 #
 # The external hooks are pinned to a commit SHA, the tag in the `frozen:` comment;
-# Dependabot bumps them (.github/dependabot.yml). The `hook-pins` hook below checks
-# this, so a hand edit to `rev: vX.Y.Z` fails.
+# Renovate bumps them (renovate.json, which extends default.json). The `hook-pins`
+# hook below checks this, so a hand edit to `rev: vX.Y.Z` fails.
 default_install_hook_types: [pre-commit, commit-msg]
 default_stages: [pre-commit, manual]
 # release-please writes the changelog; nobody edits it by hand.
@@ -35,14 +35,14 @@ repos:
         files: ^(agent/(guard\.py|settings\.json)|\.claude/(hooks/guard\.py|settings\.json))$
         pass_filenames: false
       # Every external hook below is pinned to a commit SHA with a `frozen:` comment
-      # (tests/test_precommit_config.py), and default.json keeps the decided
-      # Renovate settings (tests/test_renovate_preset.py). CI's `test` job runs
-      # these tests too.
+      # (tests/test_precommit_config.py), and default.json and renovate.json keep
+      # the decided Renovate settings (tests/test_renovate_preset.py). CI's `test`
+      # job runs these tests too.
       - id: hook-pins
         name: external hooks pinned to a commit SHA (frozen), Renovate preset
         entry: python3 -m unittest discover tests
         language: system
-        files: ^(\.pre-commit-config\.yaml|default\.json|tests/.*\.py)$
+        files: ^(\.pre-commit-config\.yaml|default\.json|renovate\.json|tests/.*\.py)$
         pass_filenames: false
 
   # gitleaks: the staged changes, before they are committed. In `--all-files` runs
@@ -89,16 +89,16 @@ repos:
     hooks:
       - id: shellcheck
 
-  # default.json, the Renovate preset every v2 repository extends. --no-global
-  # validates it as a repository's config, which a preset is, rather than as a
-  # self-hosted instance's global config (the default when a file is named);
-  # --strict also fails on options Renovate has renamed. Renovate's tags have no
-  # `v`.
+  # default.json, the Renovate preset every v2 repository extends, and renovate.json,
+  # this repository's own config. --no-global validates them as a repository's
+  # config, which a preset is, rather than as a self-hosted instance's global config
+  # (the default when a file is named); --strict also fails on options Renovate has
+  # renamed. Renovate's tags have no `v`.
   - repo: https://github.com/renovatebot/pre-commit-hooks
     rev: 5951013be55a3c04cb258a5ee98fbfc3d4f3771b  # frozen: 44.148.3
     hooks:
       - id: renovate-config-validator
-        files: ^default\.json$
+        files: ^(default|renovate)\.json$
         args: [--strict, --no-global]
 
   # The commit message: a conventional commit with one of release-please's types

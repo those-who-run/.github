@@ -4,9 +4,10 @@ renovate-config-validator (a commit hook) checks that the preset is valid Renova
 config, but not what it decides, and it passes a duration it can't read, such as
 `"minimumReleaseAge": "seven days"`. These tests hold the decisions from
 those-who-run/paddock#22: one PR per repository per week, a cooldown of at least 7
-days, security fixes at once, no auto-merge, actions pinned by digest, and the
-gomod and pre-commit managers on. Changing one is a decision, made in the open
-with the test.
+days with only the organisation's own releases exempt, security fixes outside the
+schedule, no auto-merge, actions pinned by digest, and the gomod and pre-commit
+managers on; and that this repository's own renovate.json extends the preset.
+Changing one is a decision, made in the open with the test.
 
 Standard library only. CI's `test` job runs it, and so does the `hook-pins`
 commit hook:
@@ -23,8 +24,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PRESET = ROOT / "default.json"
+OWN_CONFIG = ROOT / "renovate.json"
 
 MIN_COOLDOWN_DAYS = 7
+
+# The only rules allowed to lift the cooldown: the organisation's own releases
+# (those-who-run/paddock#22). Each is matched whole, so widening one fails.
+EXEMPTIONS = [
+    {
+        "matchDatasources": ["docker"],
+        "matchPackageNames": ["ghcr.io/those-who-run/**"],
+        "minimumReleaseAge": None,
+        "minimumReleaseAgeBehaviour": "timestamp-optional",
+    },
+    {
+        "matchDatasources": ["github-tags"],
+        "matchPackageNames": ["those-who-run/.github"],
+        "minimumReleaseAge": None,
+    },
+]
+COOLDOWN_KEYS = ("minimumReleaseAge", "minimumReleaseAgeBehaviour", "internalChecksFilter")
 DURATION = re.compile(r"^(\d+) (day|days|week|weeks)$")
 
 
@@ -87,21 +106,45 @@ class RenovatePreset(unittest.TestCase):
     def test_cooldown_is_at_least_seven_days(self):
         p = self.preset
         self.assertGreaterEqual(days(p["minimumReleaseAge"]), MIN_COOLDOWN_DAYS)
+        # A release without a timestamp counts as still in its cooldown.
+        # `timestamp-optional` would let it through unaged.
+        self.assertEqual(p["minimumReleaseAgeBehaviour"], "timestamp-required")
         # `strict` holds a version until it is old enough; `flexible` or `none`
-        # would open a PR for one still in its cooldown.
+        # would open a branch for one still in its cooldown.
         self.assertEqual(p["internalChecksFilter"], "strict")
-        # No rule shortens it; only security fixes skip it (below).
+        # Nothing but the top level, the rules and the security fixes (below)
+        # touches the cooldown: a manager or update-type block could loosen it.
         for path, key, value in walk(p):
-            if key == "minimumReleaseAge" and not path.startswith("$.vulnerabilityAlerts"):
-                with self.subTest(path=path):
-                    self.assertGreaterEqual(days(value), MIN_COOLDOWN_DAYS)
-            if key == "internalChecksFilter":
-                with self.subTest(path=path):
-                    self.assertEqual(value, "strict")
+            if key in COOLDOWN_KEYS:
+                with self.subTest(path=f"{path}.{key}"):
+                    self.assertTrue(
+                        path in ("$", "$.vulnerabilityAlerts")
+                        or path.startswith("$.packageRules["),
+                        "a cooldown setting outside the top level and packageRules",
+                    )
 
-    def test_security_fixes_open_at_once(self):
+    def test_only_the_organisations_own_releases_skip_the_cooldown(self):
+        exempt = []
+        for i, rule in enumerate(self.preset.get("packageRules", [])):
+            loosened = {k: v for k, v in rule.items() if k in COOLDOWN_KEYS}
+            if not loosened:
+                continue
+            with self.subTest(rule=i):
+                self.assertNotIn("internalChecksFilter", loosened)
+                age = loosened.get("minimumReleaseAge")
+                if age is not None and loosened.get("minimumReleaseAgeBehaviour") is None:
+                    # A rule that only sets a cooldown may lengthen it, not shorten it.
+                    self.assertGreaterEqual(days(age), MIN_COOLDOWN_DAYS)
+                    continue
+                exempt.append({k: v for k, v in rule.items() if k != "description"})
+        self.assertEqual(exempt, EXEMPTIONS)
+
+    def test_security_fixes_skip_the_schedule_and_cooldown(self):
         v = self.preset["vulnerabilityAlerts"]
-        self.assertIs(v["enabled"], True)
+        # Renovate forces this object onto each alert's rule: `enabled: true` would
+        # override a repository's rule that disables a dependency, and `false` would
+        # turn the fixes off.
+        self.assertNotIn("enabled", v)
         self.assertEqual(v["schedule"], [])
         self.assertIsNone(v["minimumReleaseAge"])
         self.assertIsNone(v["groupName"])
@@ -128,6 +171,8 @@ class RenovatePreset(unittest.TestCase):
         # Renovate turns the pre-commit manager off unless it is asked for.
         self.assertIs(p["pre-commit"]["enabled"], True)
         self.assertIn("gomodTidy", p["postUpdateOptions"])
+        # The weekly PR carries Go majors, which move a module to a new path.
+        self.assertIn("gomodUpdateImportPaths", p["postUpdateOptions"])
         # A list of managers would turn off every manager it leaves out.
         self.assertNotIn("enabledManagers", p)
         for path, key, value in walk(p):
@@ -144,6 +189,15 @@ class RenovatePreset(unittest.TestCase):
     def test_dependency_dashboard(self):
         # It lists the updates still in their cooldown, which `strict` holds back.
         self.assertIs(self.preset["dependencyDashboard"], True)
+
+
+class OwnConfig(unittest.TestCase):
+    """This repository's renovate.json: the preset, unpinned, and nothing else."""
+
+    def test_extends_the_preset_from_main(self):
+        own = json.loads(OWN_CONFIG.read_text())
+        self.assertEqual(own["extends"], ["github>those-who-run/.github"])
+        self.assertLessEqual(set(own), {"$schema", "description", "extends"})
 
 
 if __name__ == "__main__":

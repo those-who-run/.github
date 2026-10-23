@@ -19,7 +19,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+# Actions are pinned by commit SHA (the tag in the comment); Renovate bumps them.
 jobs:
   test:
     runs-on: ubuntu-latest

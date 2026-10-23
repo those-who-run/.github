@@ -1,7 +1,7 @@
 # What CI's `test` job installs to run the commit hooks: pre-commit and everything it
 # pulls in, each pinned by version and sha256, installed with `pip install
 # --require-hashes`, so a changed or added file on PyPI fails the install. Kept in a
-# file, rather than in the workflow, so Dependabot bumps it (.github/dependabot.yml).
+# file, rather than in the workflow, so Renovate bumps it (renovate.json).
 # To regenerate after changing the pre-commit pin by hand:
 #   echo 'pre-commit==X.Y.Z' | uv pip compile - --generate-hashes --universal \
 #     --python-version 3.13 --no-header -o .github/requirements-ci.txt

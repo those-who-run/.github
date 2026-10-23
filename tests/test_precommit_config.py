@@ -3,7 +3,7 @@
 Every external hook runs code on the maintainer's machine at each commit, so it is
 pinned to a commit SHA with the tag in a `frozen:` comment, as in v1
 (tests/test_claude_hooks.py::test_external_hooks_are_pinned_to_a_commit). zizmor and
-actionlint don't read this file, and Dependabot keeps a pin but doesn't stop a hand
+actionlint don't read this file, and Renovate keeps a pin but doesn't stop a hand
 edit to `rev: v6.0.0`.
 
 Standard library only. CI's `test` job runs it, and so does the `hook-pins` commit

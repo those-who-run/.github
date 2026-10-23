@@ -48,7 +48,7 @@ on:
 # Nothing by default; the job asks for what it uses.
 permissions: {}
 
-# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+# Actions are pinned by commit SHA (the tag in the comment); Renovate bumps them.
 jobs:
   check:
     runs-on: ubuntu-latest
