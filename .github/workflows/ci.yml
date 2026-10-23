@@ -1,18 +1,20 @@
 name: CI
 
-# The one required check on this repository is the `test` job, by that name
-# (scripts/protect-repo.sh --checks "test"). Renaming it leaves `main` waiting for a
-# check that never reports.
+# Two jobs, required by name: `test`, this repository's own tests, and
+# `checks / checks`, the language-neutral checks every repository runs, from
+# checks.yml in this repository. Renaming either leaves `main` waiting for a check
+# that never reports.
 on:
   pull_request:
   push:
     branches: [main]
   # release-please's PR is made with the GITHUB_TOKEN, which starts no workflows;
   # release-please.yml dispatches this on the release branch instead, so the PR's
-  # required check reports.
+  # required check reports. That is all dispatch is for: `test` fails a dispatched
+  # run on any other ref.
   workflow_dispatch:
 
-# Nothing by default; the job asks for what it uses.
+# Nothing by default; each job asks for what it uses.
 permissions: {}
 
 # A new push to a PR cancels its superseded run; runs on main always finish.
@@ -27,10 +29,23 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Dispatch exists for release-please's PR only, whose branch starts with
+      # release-please's prefix (release-please--branches--main). A step, not a
+      # job-level `if:`, so the required job never ends up skipped.
+      # tests/test_ci_workflow.py runs this script against a few refs.
+      - name: Dispatched only on a release-please branch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/release-please--*) echo "Dispatched on $GITHUB_REF." ;;
+            *)
+              echo "::error::CI is dispatched only on a release-please branch (refs/heads/release-please--*), not on '$GITHUB_REF'. Push to a PR instead."
+              exit 1
+              ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0 # gitleaks scans the PR's commits
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -41,18 +56,16 @@ jobs:
       - name: Guard tests
         run: python -m unittest discover agent/tests
       # This repository's own checks: every external hook pinned to a commit SHA with
-      # a `frozen:` comment. The `hook-pins` commit hook runs the same tests locally.
+      # a `frozen:` comment, checks.yml's job name and permissions, and the dispatch
+      # guard above. The `hook-pins` commit hook runs the same tests locally.
       - name: Repository tests
         run: python -m unittest discover tests
-      # The commit hooks on every file: what a commit runs locally, so skipping them
-      # there gains nothing. Their environments are cached by the config they come
-      # from.
+      # The commit hooks' environments, which the zizmor check below installs,
+      # cached by the config they come from.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-      - name: Commit hooks
-        run: pre-commit run --all-files --show-diff-on-failure
       # A hook that passes everything looks the same as one that finds nothing, so
       # show zizmor a workflow with an action pinned by tag and expect it to refuse it
       # with the unpinned-uses audit, not just to fail for some other reason.
@@ -71,20 +84,12 @@ jobs:
             exit 1
           fi
           rm "$case_file"
-      # The commit hook scans only what is staged, so a commit made with --no-verify,
-      # outside Claude Code or on the web would pass it: scan every commit in the PR.
-      # HEAD is the PR's merge commit, so HEAD^1..HEAD is the PR's commits.
-      - name: No secrets in the PR's commits
-        if: github.event_name == 'pull_request'
-        run: pre-commit run gitleaks-pr --hook-stage manual
-      # A squash merge takes the PR title as the commit subject, which no local hook
-      # sees: the same commit-msg hook checks it. The title comes in through env:,
-      # never expanded into the script.
-      - name: PR title is a conventional commit
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title"
-          pre-commit run conventional-pre-commit --hook-stage commit-msg \
-            --commit-msg-filename "$RUNNER_TEMP/pr-title"
+
+  # The checks every repository runs: the commit hooks on every file, gitleaks over
+  # the PR's commits, the PR title and dependency review. Called from this checkout,
+  # so a PR that changes checks.yml is checked by it. It reads the repository only
+  # (checkout and the dependency graph); the PR title comes from the event.
+  checks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml

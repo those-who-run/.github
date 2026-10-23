@@ -13,7 +13,7 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
 
 ## Definition of done
 
-- CI's `test` job is green. Locally, run what it runs:
+- CI's `test` and `checks / checks` jobs are green. Locally, run what they run:
 
   ```sh
   pre-commit install
@@ -42,6 +42,9 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
 - Every workflow has `permissions: {}` at the top and grants per job; every action
   is pinned by commit SHA with the tag in a comment; checkouts set
   `persist-credentials: false`. zizmor and actionlint check this in the commit hooks.
+- Each reusable workflow has a section in
+  [`.github/workflows/README.md`](.github/workflows/README.md): its inputs and its
+  job names. It changes in the same PR as the workflow.
 
 ## Releases
 
