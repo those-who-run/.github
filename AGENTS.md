@@ -8,8 +8,9 @@ apply here in full. This file adds only what is specific to `those-who-run/.gith
 
 The organisation's community files and profile, the scripts that protect each
 repository (`scripts/`), the canonical agent guard and settings that every repository
-copies (`agent/`), and the reusable workflows that every repository's CI and release
-call (`.github/workflows/`). A mistake here reaches every repository at once.
+copies (`agent/`), the reusable workflows that every repository's CI and release
+call (`.github/workflows/`), and the brand assets every README shows (`assets/`). A
+mistake here reaches every repository at once.
 
 ## Definition of done
 
@@ -27,6 +28,53 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
   gains has a blocked example and a near miss that passes in `agent/tests/`.
 - Docs change in the same PR: `agent/README.md` for the guard, this file for the
   rules below.
+
+## Brand assets
+
+`assets/` holds the project's brand assets, carried over from v1 with the same
+drawing and colours (v1's ADR 0004):
+
+- `banner-dark.svg`, `banner-light.svg`: the wordmark, a red rule and the tagline,
+  for a README's hero, picked by the reader's theme;
+- `wordmark-dark.svg`, `wordmark-light.svg`: the wordmark alone, transparent, for
+  dark and light pages;
+- `social-preview.png`: 1280×640, the card a link to a repository shows.
+
+They are generated, never edited. The colours and words come from
+`scripts/brand.py`, the wordmark's shapes from `assets/source/wordmark.svg`, and the
+tagline is outlined from Barlow, so no SVG needs a font to show. To regenerate after
+changing any of them:
+
+```sh
+make brand-assets   # the SVGs and the PNG; a re-run writes the same bytes
+make wordmark NOTO=<NotoSansCJK-VF.ttc>   # only to redraw the wordmark's outlines
+```
+
+`make` installs fontTools from `.github/requirements-brand.txt` (hash-checked) into
+`build/`, downloads the Barlow fonts from npm and checks their hashes, and needs
+ImageMagick (`magick`) for the PNG. `tests/test_brand_assets.py`, which CI's `test`
+job runs, builds the SVGs again without fontTools and fails when one differs from
+the committed file; the PNG is checked for its size only, as rasterising differs
+between ImageMagick builds, so regenerate it with the SVGs. The outlines are of SIL
+OFL 1.1 fonts, whose notice is `assets/OFL-1.1.txt`: keep it beside them.
+
+A README links to the images on `main` by absolute URL. The organisation's profile
+page doesn't resolve paths relative to this repository, and another repository
+can't reach them by a relative path either, so `profile/README.md` uses the same
+form a component's README does:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/those-who-run/.github/main/assets/banner-dark.svg">
+  <img src="https://raw.githubusercontent.com/those-who-run/.github/main/assets/banner-light.svg" alt="走り屋 Those Who Run" width="100%">
+</picture>
+```
+
+These paths are what other repositories link to, so a rename breaks their READMEs.
+
+**The social preview is uploaded by hand.** GitHub has no API for it, so after
+`social-preview.png` changes, the maintainer uploads it in each repository's
+*Settings → General → Social preview*.
 
 ## Workflows
 
