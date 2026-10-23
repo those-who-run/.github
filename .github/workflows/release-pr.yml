@@ -9,11 +9,13 @@ name: Release PR
 # footer, such as a changed workflow input) bumps the minor. A `Release-As: x.y.z`
 # footer sets the version by hand.
 #
-# release-please runs as the organisation's release App (twr-release), with the App's
-# Client ID and private key from this repository's `release-please` environment (main
-# only, no reviewers): the variable RELEASE_APP_CLIENT_ID and the secret
-# RELEASE_APP_PRIVATE_KEY. The numeric App ID is in scripts/repos.json, for the ruleset.
-# The reusable job names the environment itself, so nothing is passed from here.
+# release-please runs as the organisation's release App (twr-release), with the
+# App's Client ID and private key from this repository's `release-please` environment
+# (main only, no reviewers): the variable RELEASE_APP_CLIENT_ID and the secret
+# RELEASE_APP_PRIVATE_KEY. The numeric App ID is in scripts/repos.json, for the
+# ruleset. The key is passed below by name, never with `secrets: inherit`; it exists
+# only in the environment, and the reusable job that names the environment receives
+# the environment's value.
 #
 # workflow_dispatch is the way back if a merged release PR was not tagged (its label
 # still says `autorelease: pending`): run this workflow on main and release-please
@@ -24,8 +26,8 @@ on:
   workflow_dispatch:
 
 # Nothing by default; the job grants what release-please.yml's jobs use with the
-# GITHUB_TOKEN (the digest, auto-merge-off and the release dispatch), and each of them
-# narrows it. release-please itself writes with the App's token.
+# GITHUB_TOKEN (the digest, auto-merge-off and the release dispatch), and each of
+# them narrows it. release-please itself writes with the App's token.
 permissions: {}
 
 # One run at a time; a newer push supersedes a queued one, never a running one.
@@ -45,3 +47,6 @@ jobs:
       release-workflow: ""
       # The guard every repository copies, and the scripts run with an admin token.
       watched-paths: agent/ scripts/
+    # By name only: the reusable job reads the environment's value.
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

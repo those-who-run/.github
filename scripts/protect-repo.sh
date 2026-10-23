@@ -89,9 +89,10 @@
 # Failures. A bad list or bad options, or a repository that can't be applied (no admin
 # rights, or actions_prs without a CODEOWNERS file), stop the run with exit 2 before
 # anything is read or changed. Once writing starts, a write GitHub refuses doesn't stop
-# the run: the script prints GitHub's message, carries on with the next setting and
-# the next repository, and exits 1 at the end. So does a refused `release tag creation`
-# ruleset (release_app_id still a placeholder). --check exits 1 on drift or a refusal.
+# the run, and nor does a refused read of a ruleset: the script prints GitHub's
+# message, carries on with the next setting and the next repository, and exits 1 at
+# the end. So does a refused `release tag creation` ruleset (release_app_id still a
+# placeholder). --check exits 1 on drift or a refusal.
 #
 # Needs: gh and jq.
 set -euo pipefail
@@ -339,7 +340,7 @@ read_or() {
 }
 # GitHub returns lists 30 to a page, and gh --paginate prints each page's JSON in
 # turn, so these join the pages before anything looks for a name in them.
-rulesets() { gh api --paginate "repos/$repo/rulesets" | jq -cs 'add // []'; }
+rulesets() { api --paginate "repos/$repo/rulesets" | jq -cs 'add // []'; }
 branch_policies() {
   api --paginate "repos/$repo/environments/release/deployment-branch-policies" |
     jq -cs '{branch_policies: (map(.branch_policies // []) | add // [])}'
@@ -354,10 +355,22 @@ write_ruleset() {
   fi
 }
 ruleset() {
-  local name=$1 body=$2 id have want_c have_c
-  id=$(rulesets | jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty')
+  local name=$1 body=$2 id have want_c have_c list
+  # A read GitHub refuses leaves this ruleset unchecked and unwritten, and the run
+  # carries on: writing it blind could make a second ruleset of the same name.
   have='{}'
-  [ -z "$id" ] || have=$(gh api "repos/$repo/rulesets/$id")
+  if ! list=$(rulesets) ||
+     { id=$(jq -r --arg n "$name" '[.[] | select(.name == $n)][0].id // empty' <<<"$list") &&
+       [ -n "$id" ] && ! have=$(api "repos/$repo/rulesets/$id"); }; then
+    if [ "$mode" = check ]; then
+      say "ruleset '$name': not checked: GitHub refused a read (its message is above)" >&2
+    else
+      say "ruleset '$name': not changed: GitHub refused a read (its message is above)" >&2
+    fi
+    failed=true
+    repo_failed=true
+    return 0
+  fi
   want_c=$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$body")
   have_c=$(jq -c --argjson want "$body" "$CANON_RULESET" <<<"$have")
   # GitHub leaves bypass_actors out of a ruleset for anyone who can't edit it, so

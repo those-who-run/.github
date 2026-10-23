@@ -159,9 +159,10 @@ that runs one. A PR cannot change the checks that judge it.
 Keeps a repository's release PR open with release-please, running as the
 organisation's release App (`twr-release`), and comments on it what changed since the
 last release in the places that need a look. The App opens the release PR, so the
-repository's CI runs on it through `pull_request` like any other PR. The maintainer merges the release PR by hand; that run tags the merge
-commit `vX.Y.Z`, creates the GitHub release, sets the outputs and dispatches the
-caller's release workflow on the new tag, which publishes. Nothing in it merges or
+repository's CI runs on it through `pull_request` like any other PR. The maintainer
+merges the release PR by hand; that run tags the merge commit `vX.Y.Z`, creates the
+GitHub release, sets the outputs and dispatches the caller's release workflow on the
+new tag, which publishes. Nothing in it merges or
 arms auto-merge (`tests/test_release_workflow.py`).
 
 It reads the caller's `release-please-config.json` and
@@ -174,6 +175,12 @@ It reads the caller's `release-please-config.json` and
 | `ci-workflow` | `ci.yml` | No longer used: CI starts on the App's release PR through `pull_request`. Kept so a caller that still passes it doesn't fail; leave it out. |
 | `release-workflow` | `release.yml` | The caller's release workflow, by file name, dispatched on the new tag after a release. It needs `workflow_dispatch:` in its `on:` and must exist at the tag. Empty for a repository with nothing to publish. |
 | `watched-paths` | (none) | More paths for the digest to list, space-separated; a directory ends in `/`. |
+
+### Secrets
+
+| Secret | Required | What it is |
+| --- | --- | --- |
+| `RELEASE_APP_PRIVATE_KEY` | yes | The release App's private key. The caller passes it by name, `RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}`, never with `secrets: inherit`. It exists only in the caller's `release-please` environment. |
 
 ### Outputs
 
@@ -193,7 +200,8 @@ It reads the caller's `release-please-config.json` and
   comment on the release PR, edited in place, from `scripts/release_digest.py`
   in this repository at the commit the caller pinned. `contents: read` and
   `pull-requests: write`.
-- `auto-merge-off`: every run. Turns off auto-merge on the open release PR if
+- `auto-merge-off`: every run that isn't cancelled, even when `release-please`
+  failed. Turns off auto-merge on the open release PR if
   anyone armed it, with the GraphQL `disablePullRequestAutoMerge` mutation, which
   cannot merge. `pull-requests: write`.
 - `release`: when this run released, and `release-workflow` is set. Dispatches
@@ -219,13 +227,18 @@ and private key come from the caller's `release-please` environment: the variabl
 `RELEASE_APP_CLIENT_ID`, passed to the action as `client-id`, and the secret
 `RELEASE_APP_PRIVATE_KEY`. Its numeric App ID is `release_app_id` in
 [`scripts/repos.json`](../../scripts/repos.json), because a ruleset names its bypass
-actor by that number; the workflow doesn't use it. The reusable
-`release-please` job names the environment itself (`environment: release-please`), so
-GitHub resolves both in the calling repository, as it does for any job in that
-environment. The caller passes no secrets, and doesn't use `secrets: inherit`: a
-calling job can't name an environment, an environment secret can't be passed through
-`workflow_call`, and no other job here needs a secret. The environment allows
-deployments from `main` only, so a run on any other branch can't read the key.
+actor by that number; the workflow doesn't use it.
+
+How the key reaches the job ("Reuse workflows" in GitHub's docs): a calling job can't
+name an environment, so the reusable `release-please` job names it
+(`environment: release-please`). The caller still passes the secret, by name, even
+though it exists only in the environment; the job that names the environment then
+receives the environment's value. The reusable workflow declares the secret
+`required: true`, because a secret the caller doesn't pass resolves to an empty
+string without an error; with `required`, a caller that leaves it out fails at the
+call. The caller passes only this secret, and never uses `secrets: inherit`. The
+environment allows deployments from `main` only, so a run on any other branch gets
+no key.
 
 ### The digest
 
@@ -294,11 +307,14 @@ jobs:
     uses: those-who-run/.github/.github/workflows/release-please.yml@<sha> # vX.Y.Z
     with:
       release-workflow: release.yml
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 The calling job grants the ceiling for the jobs that use the `GITHUB_TOKEN`, and each
-of them narrows it. It passes no secrets: the `release-please` job reads the App's
-from the repository's `release-please` environment.
+of them narrows it. It passes one secret, the App's key, by name; the
+`release-please` job receives the value from the repository's `release-please`
+environment.
 
 ### Publishing
 
@@ -371,8 +387,7 @@ Once, for the organisation:
    - repository permissions: Contents read and write, Pull requests read and write,
      Issues read and write (labels), Metadata read;
    - installable only on this account.
-2. Note the App ID (a number) and the Client ID (it starts `Iv23`). Generate a
-   private key.
+2. Note the App ID (a number) and the Client ID (it starts `Iv23`).
 3. Put the numeric App ID in `release_app_id` in
    [`scripts/repos.json`](../../scripts/repos.json), by pull request. For
    `twr-release` it is already there. While it is a string starting with
@@ -386,14 +401,16 @@ For each repository that adopts release-please (first `.github`):
    repository to the installation's selected repositories).
 2. In the repository, create the environment `release-please`:
    - deployment branches: `main` only, no required reviewers;
-   - secret `RELEASE_APP_PRIVATE_KEY`: the App's private key;
    - variable `RELEASE_APP_CLIENT_ID`: the App's Client ID (not the numeric App ID,
-     which only `scripts/repos.json` needs).
-3. Delete the downloaded key file once every repository that needs it has it.
-4. Make sure the repository is in `scripts/repos.json`, then run
+     which only `scripts/repos.json` needs);
+   - secret `RELEASE_APP_PRIVATE_KEY`: a private key generated for this repository in
+     the App's settings. Store it, then delete the downloaded file at once. A key is
+     never kept on disk for a later repository: each repository gets a new key.
+     Delete a key in the App's settings once no environment uses it.
+3. Make sure the repository is in `scripts/repos.json`, then run
    `scripts/protect-repo.sh --check <owner/repo>`, the apply, and `--check` again.
    The `release tag creation` ruleset then lets only the App create a release tag.
-5. Confirm the next release PR is opened by `twr-release[bot]`, its required checks
+4. Confirm the next release PR is opened by `twr-release[bot]`, its required checks
    run without a dispatch, and merging it creates the tag and release as the App.
 
 "Allow GitHub Actions to create and approve pull requests" stays off

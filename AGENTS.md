@@ -68,9 +68,9 @@ account isn't a reviewer. Turn it on once there is a second reviewer.
 release-please keeps a release PR open from the Conventional Commits on `main`, as
 the organisation's release App (`twr-release`), whose Client ID and key are in the
 repository's `release-please` environment (its numeric App ID is in
-`scripts/repos.json`, for the release tag ruleset). The maintainer merges it by hand, which tags `vX.Y.Z`
-and creates the GitHub release; only the App may create a release tag. The App's
-setup, and how a repository gets it, are in
+`scripts/repos.json`, for the release tag ruleset). The maintainer merges it by
+hand, which tags `vX.Y.Z` and creates the GitHub release; only the App may create a
+release tag. The App's setup, and how a repository gets it, are in
 [`.github/workflows/README.md`](.github/workflows/README.md#the-repositorys-settings).
 `release-pr.yml` does this through `release-please.yml`, the reusable workflow every
 repository calls, so it is tested here first; its digest comment on the release PR

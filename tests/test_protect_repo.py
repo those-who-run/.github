@@ -632,6 +632,37 @@ class ProtectRepo(unittest.TestCase):
                           "repos/example/a/private-vulnerability-reporting"})
         self.assertEqual(self.run_script("--all").writes, [])
 
+    def test_a_failed_ruleset_read_doesnt_stop_the_run(self):
+        self.write_list({"example/a": entry(codeql=["go"]), "example/b": entry(codeql=["go"])})
+        self.state["repos"]["example/a"] = fresh_repo()
+        self.state["repos"]["example/b"] = fresh_repo()
+        self.state["fail"] = [{"method": "GET", "path": r"^repos/example/a/rulesets$",
+                               "message": "Server Error"}]
+        for args, outcome in ((["--check", "--all"], "not checked"), (["--all"], "not changed")):
+            with self.subTest(args=args):
+                run = self.run_script(*args)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn("example/a: error: gh api repos/example/a/rulesets: Server Error", run.err)
+                for name in ("main", "release tags", "release tag creation"):
+                    self.assertIn(f"example/a: ruleset '{name}': {outcome}: GitHub refused a read", run.err)
+                # No ruleset is written blind, and the rest goes on.
+                self.assertFalse([c for c in run.writes if "/rulesets" in c["path"] and "example/a" in c["path"]])
+                self.assertIn("failed:", run.err)
+        a, b = self.state["repos"]["example/a"], self.state["repos"]["example/b"]
+        self.assertEqual(a["_rulesets"], [])
+        self.assertEqual(a["_codeql"]["state"], "configured")
+        self.assertEqual(len(b["_rulesets"]), 3)
+        # A refused read of one ruleset, once they exist.
+        self.state["fail"] = []
+        self.assertEqual(self.run_script("--all").code, 0)
+        self.state["fail"] = [{"method": "GET", "path": r"^repos/example/a/rulesets/\d+$",
+                               "message": "Server Error"}]
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertIn("example/a: ruleset 'main': not checked: GitHub refused a read", run.err)
+        self.assertNotIn("example/b: ruleset", run.err)
+        self.assertNotIn("no drift", run.out)
+
     def test_a_failed_environment_write_is_reported_and_the_run_goes_on(self):
         self.write_list({"example/a": entry(publishes=True), "example/b": entry(publishes=True)})
         self.state["repos"]["example/a"] = fresh_repo()

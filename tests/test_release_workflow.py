@@ -109,7 +109,8 @@ class NothingMerges(unittest.TestCase):
     def test_auto_merge_is_disarmed_on_every_run(self):
         block = job(WORKFLOW.read_text(), "auto-merge-off")
         self.assertIn("disablePullRequestAutoMerge", block)
-        self.assertNotRegex(block, r"(?m)^    if:")
+        # Even when release-please failed; only a cancelled run skips it.
+        self.assertEqual(re.findall(r"(?m)^    if: (.*)$", block), ["${{ !cancelled() }}"])
 
     def test_each_way_to_merge_is_caught(self):
         cases = (
@@ -288,6 +289,12 @@ def app_token_problems(workflow: str) -> list[str]:
     rp = job(workflow, "release-please")
     if found.get("release-please", {}).get("keys", {}).get("environment") != "release-please":
         problems.append("the release-please job doesn't run in the release-please environment")
+    # The key is declared required, so a caller that doesn't pass it fails at the call.
+    declared = re.search(
+        r"^    secrets:\n      RELEASE_APP_PRIVATE_KEY:\n        description: .+\n        required: true\n",
+        workflow, re.M)
+    if not declared or re.search(r"^\s+secrets: inherit", workflow, re.M):
+        problems.append("the workflow doesn't declare RELEASE_APP_PRIVATE_KEY as a required secret")
     if not APP_ACTION.search(rp):
         problems.append("the release-please job doesn't mint the token with a SHA-pinned create-github-app-token")
     for needed in ("client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}",
@@ -340,9 +347,14 @@ class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
         # The handoff on the tag is the only dispatch left.
         self.assertEqual(text.count("gh workflow run"), 1)
 
-    def test_the_caller_passes_no_secrets(self):
+    def test_the_caller_passes_the_key_by_name_only(self):
         caller = CALLER.read_text()
-        self.assertNotRegex(caller, r"(?m)^\s+secrets:")
+        # Exactly one secret, by name; an environment secret the caller doesn't pass
+        # is empty in the reusable workflow.
+        self.assertEqual(re.findall(r"(?m)^    secrets:(.*)$", caller), [""])
+        passed = re.findall(r"(?m)^      ([A-Z_]+): (.+)$", caller.split("    secrets:\n", 1)[1])
+        self.assertEqual(passed, [("RELEASE_APP_PRIVATE_KEY", "${{ secrets.RELEASE_APP_PRIVATE_KEY }}")])
+        self.assertNotRegex(caller, r"(?m)^\s+secrets: inherit")
         self.assertNotIn("ci-workflow", caller)
         self.assertNotIn("contents: write", caller)
 
@@ -363,6 +375,8 @@ class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
             "the token is minted with app-id, not client-id": text.replace(
                 "          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}",
                 "          app-id: ${{ vars.RELEASE_APP_ID }}", 1),
+            "the workflow doesn't declare RELEASE_APP_PRIVATE_KEY as a required secret": text.replace(
+                "        required: true\n", "        required: false\n", 1),
             "the token outlives the job": text.replace(
                 "          client-id:", "          skip-token-revoke: true\n          client-id:", 1),
         }

@@ -11,11 +11,13 @@ name: release-please
 #
 #   uses: those-who-run/.github/.github/workflows/release-please.yml@<sha> # vX.Y.Z
 #
-# Inputs: `release-workflow`, the caller's publishing workflow, dispatched on the tag;
-# `watched-paths`, more paths for the digest; `ci-workflow`, no longer used (kept so
-# a caller that still passes it doesn't fail). Outputs: `release_created` (`true`),
-# `tag_name` (`v1.2.3`) and `version` (`1.2.3`), all empty on a run that releases
-# nothing. Callers, their permissions and the settings: .github/workflows/README.md.
+# Inputs: `release-workflow`, the caller's publishing workflow, dispatched on the
+# tag; `watched-paths`, more paths for the digest; `ci-workflow`, no longer used
+# (kept so a caller that still passes it doesn't fail). Secret:
+# `RELEASE_APP_PRIVATE_KEY`, required, passed by name. Outputs: `release_created`
+# (`true`), `tag_name` (`v1.2.3`) and `version` (`1.2.3`), all empty on a run that
+# releases nothing. Callers, their permissions and the settings:
+# .github/workflows/README.md.
 #
 # Jobs, by stable name (a caller's checks are `<caller job> / <job>`):
 # - release-please: opens or updates the release PR, or releases a merged one, as the
@@ -34,12 +36,14 @@ name: release-please
 # calling repository and to the permissions release-please uses. A PR the App opens
 # starts the caller's CI through `pull_request` like any other, and the App is the
 # one bypass actor allowed to create a release tag (scripts/protect-repo.sh). The
-# App's Client ID and private key come from the caller's `release-please` environment
-# (deployments from main only): the release-please job names that environment, so
-# GitHub resolves `vars.RELEASE_APP_CLIENT_ID` and `secrets.RELEASE_APP_PRIVATE_KEY` in the
-# caller's repository. The caller passes no secrets (no `secrets: inherit`): an
-# environment secret can't be passed through `workflow_call`, and nothing else here
-# needs one. Every other job uses the GITHUB_TOKEN with the permissions it lists.
+# App's Client ID and private key come from the caller's `release-please`
+# environment (deployments from main only), which the release-please job names. The
+# Client ID is the variable `vars.RELEASE_APP_CLIENT_ID`. The key is the secret
+# RELEASE_APP_PRIVATE_KEY, declared below as required: the caller passes it by name
+# (never `secrets: inherit`), even though it exists only in the environment, and the
+# job that names the environment receives the environment's value. A caller that
+# leaves it out fails at the call. Every other job uses the GITHUB_TOKEN with the
+# permissions it lists.
 #
 # Who merges: the maintainer, by hand. Nothing here merges or arms auto-merge, and
 # auto-merge-off disarms it: an auto-merge armed on the release PR merges it as the
@@ -72,6 +76,10 @@ on:
       version:
         description: The release's version (1.2.3); empty when nothing was released.
         value: ${{ jobs.release-please.outputs.version }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        description: The release App's private key, from the caller's release-please environment; pass it by name.
+        required: true
 
 # Nothing by default; each job asks for what it uses.
 permissions: {}
@@ -80,8 +88,8 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    # The caller's environment, which holds the App's Client ID and private key and allows
-    # deployments from main only.
+    # The caller's environment, which holds the App's Client ID and private key and
+    # allows deployments from main only.
     environment: release-please
     # Nothing from the GITHUB_TOKEN: release-please writes with the App's token.
     permissions: {}
@@ -200,6 +208,9 @@ jobs:
   # GraphQL mutation only disarms it; nothing here can merge.
   auto-merge-off:
     needs: release-please
+    # Runs whether release-please succeeded or failed (a missing App or environment
+    # fails it), so auto-merge stays off; only a cancelled run skips it.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write # turns off auto-merge if someone armed it
