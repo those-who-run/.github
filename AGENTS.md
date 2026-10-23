@@ -9,8 +9,9 @@ apply here in full. This file adds only what is specific to `those-who-run/.gith
 The organisation's community files and profile, the scripts that protect each
 repository (`scripts/`), the canonical agent guard and settings that every repository
 copies (`agent/`), the reusable workflows that every repository's CI and release
-call (`.github/workflows/`), and the brand assets every README shows (`assets/`). A
-mistake here reaches every repository at once.
+call (`.github/workflows/`), the brand assets every README shows (`assets/`), and the
+Renovate preset every repository extends (`default.json`). A mistake here reaches
+every repository at once.
 
 ## Definition of done
 
@@ -95,6 +96,44 @@ These paths are what other repositories link to, so a rename breaks their README
 - Each reusable workflow has a section in
   [`.github/workflows/README.md`](.github/workflows/README.md): its inputs and its
   job names. It changes in the same PR as the workflow.
+
+## Dependency updates
+
+Every v2 repository gets its version updates from Renovate (Mend's hosted app,
+installed on the organisation), configured by the shared preset `default.json` here.
+A repository extends it from a `renovate.json` at its root:
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>those-who-run/.github"]
+}
+```
+
+What the preset decides (those-who-run/paddock#22):
+
+- One PR per repository per week, on Monday before 06:00 UTC, with every update in
+  it (majors included), titled `deps: update all dependencies`. The Dependency
+  Dashboard issue lists what is waiting.
+- A release is offered only once it is 7 days old (14 for the commit hooks, which
+  run on the maintainer's machine), so one pulled for being malicious never
+  reaches a PR. A newer release still in its cooldown waits on the dashboard.
+- Security fixes for Dependabot alerts open at once, in a PR of their own, outside
+  the schedule and the cooldown.
+- Nothing is auto-merged. Code-owner review applies to Renovate's PRs as to any.
+- Actions are pinned by commit SHA with the full tag in a comment; pre-commit hooks
+  keep their SHA and `# frozen:` tag; Go updates run `go mod tidy`.
+
+Dependabot stays on for security alerts only, which Renovate reads to open its
+fixes. A repository has no `dependabot.yml` version updates, so there are no
+duplicate PRs. This repository itself still has Dependabot's version updates
+(`.github/dependabot.yml`) until it moves to the preset. A repository overrides the preset in its own `renovate.json` only
+for a reason it gives there in a `description`.
+
+`renovate-config-validator` checks the preset in the commit hooks (as a
+repository's config, `--no-global`), and `tests/test_renovate_preset.py` checks the
+decided values above. A change to the preset reaches every repository at
+Renovate's next run, without a release: review it like a workflow change.
 
 ## Repository protection
 

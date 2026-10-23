@@ -35,12 +35,14 @@ repos:
         files: ^(agent/(guard\.py|settings\.json)|\.claude/(hooks/guard\.py|settings\.json))$
         pass_filenames: false
       # Every external hook below is pinned to a commit SHA with a `frozen:` comment
-      # (tests/test_precommit_config.py, which CI's `test` job also runs).
+      # (tests/test_precommit_config.py), and default.json keeps the decided
+      # Renovate settings (tests/test_renovate_preset.py). CI's `test` job runs
+      # these tests too.
       - id: hook-pins
-        name: external hooks pinned to a commit SHA (frozen)
+        name: external hooks pinned to a commit SHA (frozen), Renovate preset
         entry: python3 -m unittest discover tests
         language: system
-        files: ^(\.pre-commit-config\.yaml|tests/.*\.py)$
+        files: ^(\.pre-commit-config\.yaml|default\.json|tests/.*\.py)$
         pass_filenames: false
 
   # gitleaks: the staged changes, before they are committed. In `--all-files` runs
@@ -86,6 +88,18 @@ repos:
     rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
     hooks:
       - id: shellcheck
+
+  # default.json, the Renovate preset every v2 repository extends. --no-global
+  # validates it as a repository's config, which a preset is, rather than as a
+  # self-hosted instance's global config (the default when a file is named);
+  # --strict also fails on options Renovate has renamed. Renovate's tags have no
+  # `v`.
+  - repo: https://github.com/renovatebot/pre-commit-hooks
+    rev: 5951013be55a3c04cb258a5ee98fbfc3d4f3771b  # frozen: 44.148.3
+    hooks:
+      - id: renovate-config-validator
+        files: ^default\.json$
+        args: [--strict, --no-global]
 
   # The commit message: a conventional commit with one of release-please's types
   # (release-please-config.json). checks.yml checks a PR's title, the squash
