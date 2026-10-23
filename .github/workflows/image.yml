@@ -1,0 +1,197 @@
+name: Image
+
+# Builds a repository's container image once, smoke-tests it and hands it on as an
+# OCI layout artifact, with the digest a publishing run must find. Pushes nothing:
+# image-publish.yml, called after this in a release run on a vX.Y.Z tag, pushes and
+# attests that exact image. Callers, inputs and how to verify an image:
+# .github/workflows/README.md.
+#
+# The job name is stable, because rulesets require checks by name
+# (`<caller job> / <reusable job>`); renaming it leaves every caller's `main` waiting
+# for a check that never reports:
+#   build    checks the inputs, builds the image for one platform with its final
+#            labels, annotations, provenance and SBOM, records its digest, smoke-tests
+#            it and uploads it. With the caller job named `image`, the PR check is
+#            `image / build`. Reads the repository, nothing more.
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: The image's name under ghcr.io/<owner>/. Empty means twr-<repository>.
+        type: string
+        default: ""
+      context:
+        description: The build context, relative to the repository root.
+        type: string
+        default: "."
+      dockerfile:
+        description: The Dockerfile, relative to the repository root. Empty means <context>/Dockerfile.
+        type: string
+        default: ""
+      platforms:
+        description: The platform to build for. One only, for now.
+        type: string
+        default: linux/amd64
+      smoke:
+        description: >-
+          A bash command run from the repository root against the built image, named
+          in $IMAGE; a non-zero exit fails the job. For example:
+          docker run --rm "$IMAGE" --version
+        type: string
+        required: true
+    outputs:
+      image:
+        description: The image's full name, ghcr.io/<owner>/<image>.
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: The built image's digest (sha256:…), recorded before the smoke test ran.
+        value: ${{ jobs.build.outputs.digest }}
+      artifact:
+        description: The name of the artifact holding the image as an OCI layout, for image-publish.yml.
+        value: ${{ jobs.build.outputs.artifact }}
+
+# Nothing by default; the job asks for what it uses, and the caller's job grants the
+# ceiling. Publishing lives in image-publish.yml, so callers of this one grant no
+# write permission at all.
+permissions: {}
+
+# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.inputs.outputs.name }}
+      digest: ${{ steps.digest.outputs.digest }}
+      artifact: ${{ steps.inputs.outputs.artifact }}
+    steps:
+      # Everything a caller or the event controls comes in through env:, never
+      # expanded into the script.
+      - name: Check the inputs
+        id: inputs
+        env:
+          IMAGE_INPUT: ${{ inputs.image }}
+          PLATFORMS: ${{ inputs.platforms }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          image=${IMAGE_INPUT:-twr-${GITHUB_REPOSITORY#*/}}
+          if ! [[ $image =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "::error::image name '$image' is not a lower-case OCI repository name"
+            exit 1
+          fi
+          # The smoke test loads one platform, and the SBOM attested is that one's.
+          if ! [[ $PLATFORMS =~ ^([a-z0-9]+)/([a-z0-9]+)(/([a-z0-9]+))?$ ]]; then
+            echo "::error::platforms must name exactly one platform, such as linux/amd64, not '$PLATFORMS'"
+            exit 1
+          fi
+          os=${BASH_REMATCH[1]} arch=${BASH_REMATCH[2]} variant=${BASH_REMATCH[4]}
+          # On a release tag the image gets its version now, so the image published
+          # from this build carries it; a PR build has none.
+          version=""
+          if [ "$REF_TYPE" = tag ] && [ "$REF" = "refs/tags/$REF_NAME" ] \
+            && [[ $REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            version=${BASH_REMATCH[1]}
+          fi
+          {
+            echo "name=ghcr.io/${OWNER,,}/$image"
+            echo "tag=${version:-build}"
+            echo "artifact=oci-image-$image"
+            echo "os=$os"
+            echo "arch=$arch"
+            echo "variant=$variant"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.source=$SOURCE"
+            echo "org.opencontainers.image.revision=$REVISION"
+            if [ -n "$version" ]; then echo "org.opencontainers.image.version=$version"; fi
+            echo "EOF"
+            echo "annotations<<EOF"
+            echo "index:org.opencontainers.image.source=$SOURCE"
+            echo "index:org.opencontainers.image.revision=$REVISION"
+            if [ -n "$version" ]; then echo "index:org.opencontainers.image.version=$version"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The one build: BuildKit's SLSA provenance and an SPDX SBOM go into the image
+      # index, written as an OCI layout, which is what gets smoke-tested and what
+      # image-publish.yml pushes. The source label and annotation link the package to
+      # the calling repository on GitHub (the label on the image, the annotation on
+      # the index the attestations make). The Actions cache speeds up PR builds; a
+      # build on a tag, which a release publishes, reads none, so nothing another
+      # run wrote reaches a published image.
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          outputs: type=oci,dest=${{ runner.temp }}/image,tar=false
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.inputs.outputs.name }}:${{ steps.inputs.outputs.tag }}
+          labels: ${{ steps.inputs.outputs.labels }}
+          annotations: ${{ steps.inputs.outputs.annotations }}
+          cache-from: ${{ github.ref_type != 'tag' && 'type=gha' || '' }}
+          cache-to: ${{ github.ref_type != 'tag' && 'type=gha,mode=max' || '' }}
+      # Recorded before the caller's command runs, as this step's output, which no
+      # later step can rewrite: image-publish.yml pushes only a layout whose index
+      # has this digest, so a smoke command that changed the files would stop the
+      # release rather than reach the registry.
+      - name: Record the digest
+        id: digest
+        env:
+          LAYOUT: ${{ runner.temp }}/image
+        run: |
+          if [ "$(jq '.manifests | length' "$LAYOUT/index.json")" != 1 ]; then
+            echo "::error::the OCI layout should hold one image index"
+            exit 1
+          fi
+          digest=$(jq -r '.manifests[0].digest' "$LAYOUT/index.json")
+          if ! [[ $digest =~ ^sha256:([0-9a-f]{64})$ ]]; then
+            echo "::error::unexpected digest '$digest'"
+            exit 1
+          fi
+          echo "${BASH_REMATCH[1]}  $LAYOUT/blobs/sha256/${BASH_REMATCH[1]}" | sha256sum --check --strict --quiet
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Built \`$digest\`." >> "$GITHUB_STEP_SUMMARY"
+      # Docker gets the image from the layout itself, so the smoke test runs what is
+      # handed on, not a second build. Through a docker-archive file and
+      # `docker load`, since the runner's skopeo may be older than the Docker API it
+      # would have to speak to load the image directly.
+      - name: Load the image
+        env:
+          LAYOUT: ${{ runner.temp }}/image
+          IMAGE: ${{ steps.inputs.outputs.name }}:smoke
+          OS: ${{ steps.inputs.outputs.os }}
+          ARCH: ${{ steps.inputs.outputs.arch }}
+          VARIANT: ${{ steps.inputs.outputs.variant }}
+        run: |
+          skopeo copy --override-os "$OS" --override-arch "$ARCH" \
+            ${VARIANT:+--override-variant "$VARIANT"} \
+            "oci:$LAYOUT" "docker-archive:$RUNNER_TEMP/smoke.tar:$IMAGE"
+          docker load --input "$RUNNER_TEMP/smoke.tar"
+          rm "$RUNNER_TEMP/smoke.tar"
+      # The caller's command, from env:, so its text is never expanded into a script.
+      - name: Smoke test
+        env:
+          IMAGE: ${{ steps.inputs.outputs.name }}:smoke
+          SMOKE: ${{ inputs.smoke }}
+        run: bash -euo pipefail -c "$SMOKE"
+      # Kept long enough on a tag for the release environment's approval, which can
+      # wait up to 30 days; a PR's copy only shows the hand-over works.
+      - name: Hand the image on
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.inputs.outputs.artifact }}
+          path: ${{ runner.temp }}/image
+          if-no-files-found: error
+          retention-days: ${{ github.ref_type == 'tag' && 30 || 1 }}
+          compression-level: 0 # the layers are compressed already
