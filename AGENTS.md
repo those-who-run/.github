@@ -46,6 +46,22 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
   [`.github/workflows/README.md`](.github/workflows/README.md): its inputs and its
   job names. It changes in the same PR as the workflow.
 
+## Repository protection
+
+`scripts/repos.json` lists every v2 repository and what it needs: its required
+checks (each name as GitHub reports it, such as `checks / checks`), approvals, code
+owners, Issues, release tag patterns, whether it publishes, and CodeQL's languages.
+`scripts/protect-repo.sh` applies it. A new repository, or a check that a repository
+starts to require, is a change to that list in a PR; the maintainer merges it and
+runs the script. Agents never run it: it changes repository settings.
+
+A publishing repository may also set `prevent_self_review`, which is false when left
+out. It stays off while the maintainer is the only reviewer of the `release`
+environment: GitHub won't let a reviewer approve a deployment in a run they started,
+and his merge starts each release run, so with it on every release would wait for an
+approval nobody can give. The environment still needs his approval, and the bot
+account isn't a reviewer. Turn it on once there is a second reviewer.
+
 ## Releases
 
 release-please keeps a release PR open from the Conventional Commits on `main`. The
