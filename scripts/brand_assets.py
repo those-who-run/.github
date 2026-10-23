@@ -20,8 +20,9 @@ matters on GitHub: an SVG in Markdown is shown as an image and loads no fonts.
 from the committed dark banner, builds every SVG again and fails when one differs
 from the committed file (the palette, the wordmark or the tagline changed). The
 outline can't show a changed tagline, so the tagline's path carries its text as
-``data-tagline``, and ``--check`` fails when that is not ``brand.TAGLINE``. The PNG
-is not checked, since rasterising differs between ImageMagick builds.
+``data-tagline``, and ``--check`` fails when that is not ``brand.TAGLINE``. The PNG's
+bytes are not checked, since rasterising differs between ImageMagick builds; the
+sha256 of the SVG it was rendered from is (``SOCIAL_STAMP``).
 
     python scripts/brand_assets.py --tagline-font BARLOW_WOFF2 [--social SVG]
     python scripts/brand_assets.py --check
@@ -30,6 +31,7 @@ is not checked, since rasterising differs between ImageMagick builds.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import re
 import sys
@@ -41,6 +43,10 @@ import brand  # noqa: E402
 
 WORDMARK = ROOT / "assets" / "source" / "wordmark.svg"
 OUT = ROOT / "assets"
+# The sha256 of the SVG the committed PNG was rendered from, written by
+# `make brand-assets` after ImageMagick: the PNG's bytes can't be compared, but this
+# can, so a palette change that regenerates only the SVGs still fails the tests.
+SOCIAL_STAMP = OUT / "source" / "social-preview.svg.sha256"
 RED, BLACK, GREY, WHITE = (
     brand.hex_colour(c) for c in (brand.ADVAN_RED, brand.DEEP_BLACK, brand.CARBON_GREY, brand.WHITE)
 )
@@ -182,6 +188,12 @@ def files(tag: str) -> dict[str, str]:
         "wordmark-dark.svg": wordmark(parts, dark=True),
         "wordmark-light.svg": wordmark(parts, dark=False),
     }
+
+
+def social_digest(tag: str) -> str:
+    """The sha256 of the social preview's SVG for ``tag``, as ``SOCIAL_STAMP`` holds it."""
+    parts = wordmark_parts(WORDMARK.read_text(encoding="utf-8"))
+    return hashlib.sha256(social(parts, tag).encode("utf-8")).hexdigest()
 
 
 def committed_tagline(out: Path) -> str | None:

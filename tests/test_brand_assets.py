@@ -147,6 +147,18 @@ class CommittedAssets(unittest.TestCase):
         self.assertLess(len(png), 1_000_000)
         self.assertNotIn(b"tIME", png)
 
+    def test_the_social_preview_was_rendered_from_todays_svg(self):
+        """The PNG's bytes vary between ImageMagick builds, so `make brand-assets`
+        records the sha256 of the SVG it rendered. A palette, wordmark or layout
+        change that regenerates only the SVGs fails here."""
+        tag = brand_assets.committed_tagline(ASSETS)
+        self.assertIsNotNone(tag)
+        self.assertEqual(
+            brand_assets.SOCIAL_STAMP.read_text(encoding="ascii").strip(),
+            brand_assets.social_digest(tag),
+            "social-preview.png is stale: run `make brand-assets` and commit it",
+        )
+
     def test_the_font_licence_is_kept_beside_the_outlines(self):
         text = (ASSETS / "OFL-1.1.txt").read_text(encoding="utf-8")
         self.assertIn("SIL OPEN FONT LICENSE Version 1.1", text)

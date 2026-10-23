@@ -7,7 +7,7 @@ web app.
 The fonts, both SIL Open Font License 1.1 (``assets/OFL-1.1.txt``):
 
 - 走り屋: Noto Sans CJK JP, at weight 700 (the variable ``NotoSansCJK-VF.ttc``;
-  Fedora's google-noto-sans-cjk-vf-fonts, or https://github.com/notofonts/noto-cjk);
+  from your system's Noto CJK fonts, or https://github.com/notofonts/noto-cjk);
 - "Those Who Run": Barlow Semi Condensed 700, the Latin woff2 of the
   ``@fontsource/barlow-semi-condensed`` package, which ``make wordmark`` downloads
   and checks against its hash.

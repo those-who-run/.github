@@ -50,13 +50,15 @@ make brand-assets   # the SVGs and the PNG; a re-run writes the same bytes
 make wordmark NOTO=<NotoSansCJK-VF.ttc>   # only to redraw the wordmark's outlines
 ```
 
-`make` installs fontTools from `.github/requirements-brand.txt` (hash-checked) into
-`build/`, downloads the Barlow fonts from npm and checks their hashes, and needs
-ImageMagick (`magick`) for the PNG. `tests/test_brand_assets.py`, which CI's `test`
-job runs, builds the SVGs again without fontTools and fails when one differs from
-the committed file; the PNG is checked for its size only, as rasterising differs
-between ImageMagick builds, so regenerate it with the SVGs. The outlines are of SIL
-OFL 1.1 fonts, whose notice is `assets/OFL-1.1.txt`: keep it beside them.
+`make` installs fontTools and Brotli from `.github/requirements-brand.txt`
+(hash-checked) into `build/`, downloads the Barlow fonts from npm and checks their
+hashes, and needs ImageMagick (`magick`) for the PNG. `tests/test_brand_assets.py`,
+which CI's `test` job runs, builds the SVGs again without fontTools and fails when
+one differs from the committed file. The PNG's bytes differ between ImageMagick
+builds, so the test checks its size and the sha256 of the SVG it was rendered from
+(`assets/source/social-preview.svg.sha256`), which `make brand-assets` writes: a
+change that regenerates only the SVGs fails it. The outlines are of SIL OFL 1.1
+fonts, whose notice is `assets/OFL-1.1.txt`: keep it beside them.
 
 A README links to the images on `main` by absolute URL. The organisation's profile
 page doesn't resolve paths relative to this repository, and another repository

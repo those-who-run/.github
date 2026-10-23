@@ -23,8 +23,10 @@ BARLOW_SHA512     := b46474cba40e6d1b4abfbd4c3ad878e36db6fa674d14cfd958558357554
 BARLOW_SC_VERSION := 5.3.0
 BARLOW_SC_SHA512  := 11da50d4694b3287c6a83b10844c3e83a0e89cd2a6ceddb5a7ccbfa0d6d3978045cc492a6241721367e3db9606c666412ff2d96460317bbe0596f116720737d7
 
-BARLOW_500 := $(FONTS)/barlow-latin-500-normal.woff2
-BARLOW_SC  := $(FONTS)/barlow-semi-condensed-latin-700-normal.woff2
+# The version is in the path, so a bump downloads the new font instead of reusing
+# the old one from an earlier build/.
+BARLOW_500 := $(FONTS)/barlow-$(BARLOW_VERSION)/barlow-latin-500-normal.woff2
+BARLOW_SC  := $(FONTS)/barlow-semi-condensed-$(BARLOW_SC_VERSION)/barlow-semi-condensed-latin-700-normal.woff2
 SOCIAL_SVG := $(BUILD)/social-preview.svg
 NOTO       ?=
 
@@ -42,9 +44,9 @@ $(BRAND_ENV): .github/requirements-brand.txt
 # One woff2 from an npm tarball, after checking the tarball's sha512.
 # $(1): package, $(2): version, $(3): sha512 (hex), $(4): the file in package/files/.
 define font
-	mkdir -p $(FONTS)
+	mkdir -p $(dir $@)
 	curl -fsSL -o $(FONTS)/$(1)-$(2).tgz $(NPM)/$(1)/-/$(1)-$(2).tgz
-	echo "$(3)  $(FONTS)/$(1)-$(2).tgz" | sha512sum --check --quiet
+	$(PYTHON) -c 'import hashlib, sys; d = hashlib.sha512(open(sys.argv[1], "rb").read()).hexdigest(); sys.exit(0 if d == sys.argv[2] else f"{sys.argv[1]}: sha512 {d}, expected {sys.argv[2]}")' $(FONTS)/$(1)-$(2).tgz $(3)
 	tar -xzf $(FONTS)/$(1)-$(2).tgz -O package/files/$(4) > $@.tmp
 	mv $@.tmp $@
 endef
@@ -59,11 +61,12 @@ $(BARLOW_SC):
 # social preview from an SVG that is not kept, without the PNG's date chunks, so a
 # re-run writes the same bytes. tests/test_brand_assets.py checks the SVGs against
 # the committed files; the PNG only by its size, as rasterising differs between
-# ImageMagick builds.
+# ImageMagick builds, and by the sha256 of the SVG it came from, written last.
 brand-assets: $(BRAND_ENV) $(BARLOW_500)
 	@command -v magick >/dev/null 2>&1 || { echo "ImageMagick (magick) is missing: it renders the social preview" >&2; exit 1; }
 	$(BRAND_PY) scripts/brand_assets.py --tagline-font $(BARLOW_500) --social $(SOCIAL_SVG)
 	magick -background none $(SOCIAL_SVG) -strip -define png:exclude-chunks=date,time assets/social-preview.png
+	$(PYTHON) -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' $(SOCIAL_SVG) > assets/source/social-preview.svg.sha256
 	rm -f $(SOCIAL_SVG)
 
 # The wordmark's outlines: 走り屋 from Noto Sans CJK JP, which is a system font here as
