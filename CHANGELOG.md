@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/those-who-run/.github/compare/v0.1.1...v0.2.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **release:** a repository that calls release-please.yml needs the release App installed and a release-please environment (main only) with the variable RELEASE_APP_ID and the secret RELEASE_APP_PRIVATE_KEY. The ci-workflow input is no longer used; it is still accepted.
+
+### CI
+
+* **release:** release-please runs as the organisation's GitHub App ([#13](https://github.com/those-who-run/.github/issues/13)) ([07c1b5a](https://github.com/those-who-run/.github/commit/07c1b5a1fe0c08b4263495c903dd46776ef80c4f))
+
 ## [0.1.1](https://github.com/those-who-run/.github/compare/v0.1.0...v0.1.1) (2026-10-23)
 
 
