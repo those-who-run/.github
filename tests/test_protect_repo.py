@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "protect-repo.sh"
 LIST = ROOT / "scripts" / "repos.json"
 MAINTAINER_ID = 1001
-# The release App's ID in the lists these tests write; repos.json holds a placeholder.
+# The release App's ID in the lists these tests write (repos.json holds the real one).
 APP_ID = 424242
 PAGE = 2
 
@@ -259,8 +259,8 @@ class ProtectRepo(unittest.TestCase):
         self.calls_path = tmp / "calls.jsonl"
         self.list_path = tmp / "repos.json"
         self.state = {"repos": {}, "users": {"ciaranRoche": MAINTAINER_ID}, "next_id": 100}
-        # The list in the repository with the App's ID set, for one-off runs: with
-        # the placeholder every run refuses the creation ruleset (tested on its own).
+        # The list in the repository with the tests' App ID, for one-off runs, so
+        # their rulesets don't depend on the real ID.
         self.list_with_app = tmp / "repos-with-app.json"
         listed = json.loads(LIST.read_text())
         listed["release_app_id"] = APP_ID
@@ -360,21 +360,34 @@ class ProtectRepo(unittest.TestCase):
         listed = json.loads(LIST.read_text())["repositories"]
         for name in listed:
             self.state["repos"][name] = fresh_repo()
-        # With the App's ID set, as the maintainer sets it once the App exists.
-        run = self.run_script("--all", list_file=self.list_with_app)
+        run = self.run_script("--all", list_file=LIST)
         self.assertEqual(run.code, 0, run.err)
-        self.assertEqual(self.run_script("--check", "--all", list_file=self.list_with_app).code, 0)
+        self.assertNotIn("refused", run.err)
+        self.assertEqual(self.run_script("--check", "--all", list_file=LIST).code, 0)
         self.assertNotIn("those-who-run/those-who-run", listed)
         self.assertEqual(listed["those-who-run/.github"]["checks"][:2], ["test", "checks / checks"])
 
-    def test_the_list_in_the_repository_holds_a_placeholder_for_the_app(self):
+    def test_the_list_in_the_repository_names_the_app(self):
         listed = json.loads(LIST.read_text())
-        self.assertIsInstance(listed["release_app_id"], str)
-        self.assertTrue(listed["release_app_id"].startswith("PLACEHOLDER"))
+        self.assertIs(type(listed["release_app_id"]), int)
+        self.assertGreater(listed["release_app_id"], 0)
+        for name in listed["repositories"]:
+            self.state["repos"][name] = fresh_repo()
+        self.assertEqual(self.run_script("--all", list_file=LIST).code, 0)
+        for name in listed["repositories"]:
+            self.assertEqual(self.ruleset(name, "release tag creation")["bypass_actors"],
+                             [{"actor_id": listed["release_app_id"], "actor_type": "Integration",
+                               "bypass_mode": "always"}])
+
+    def test_the_list_in_the_repository_with_a_placeholder(self):
+        # A new organisation or a fork starts with a placeholder.
+        listed = json.loads(LIST.read_text())
+        listed["release_app_id"] = "PLACEHOLDER: the App's ID"
+        self.list_path.write_text(json.dumps(listed))
         for name in listed["repositories"]:
             self.state["repos"][name] = fresh_repo()
         # Everything but the creation ruleset applies; the run exits 1.
-        run = self.run_script("--all", list_file=LIST)
+        run = self.run_script("--all", list_file=self.list_path)
         self.assertEqual(run.code, 1, run.err)
         for name in listed["repositories"]:
             self.assertIn(f"{name}: refused: ruleset 'release tag creation': release_app_id", run.err)
@@ -389,7 +402,7 @@ class ProtectRepo(unittest.TestCase):
         # The Go fixture that tests go.yml is Go code CodeQL reads.
         self.assertIn("go", dotgithub["codeql"])
         self.state["repos"]["those-who-run/.github"] = fresh_repo()
-        run = self.run_script("those-who-run/.github", list_file=self.list_with_app)
+        run = self.run_script("those-who-run/.github", list_file=LIST)
         self.assertEqual(run.code, 0, run.err)
         repo = self.state["repos"]["those-who-run/.github"]
         self.assertEqual(sorted(repo["_codeql"]["languages"]), ["actions", "go", "python"])

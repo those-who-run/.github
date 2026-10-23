@@ -214,8 +214,12 @@ release-please. It is:
 The other jobs (`digest`, `auto-merge-off`, `release`) keep the `GITHUB_TOKEN` with the
 permissions listed above. `tests/test_release_workflow.py` checks all of this.
 
-The App's ID and private key come from the caller's `release-please` environment: the
-variable `RELEASE_APP_ID` and the secret `RELEASE_APP_PRIVATE_KEY`. The reusable
+The App has two identifiers, used in two places. Its Client ID (it starts `Iv23`)
+and private key come from the caller's `release-please` environment: the variable
+`RELEASE_APP_CLIENT_ID`, passed to the action as `client-id`, and the secret
+`RELEASE_APP_PRIVATE_KEY`. Its numeric App ID is `release_app_id` in
+[`scripts/repos.json`](../../scripts/repos.json), because a ruleset names its bypass
+actor by that number; the workflow doesn't use it. The reusable
 `release-please` job names the environment itself (`environment: release-please`), so
 GitHub resolves both in the calling repository, as it does for any job in that
 environment. The caller passes no secrets, and doesn't use `secrets: inherit`: a
@@ -367,11 +371,14 @@ Once, for the organisation:
    - repository permissions: Contents read and write, Pull requests read and write,
      Issues read and write (labels), Metadata read;
    - installable only on this account.
-2. Note the App ID. Generate a private key.
-3. Set `release_app_id` in [`scripts/repos.json`](../../scripts/repos.json) to the App
-   ID, by pull request. Until then it is a placeholder, and
-   `scripts/protect-repo.sh` refuses to apply or check the `release tag creation`
-   ruleset (it carries on with the rest and exits 1).
+2. Note the App ID (a number) and the Client ID (it starts `Iv23`). Generate a
+   private key.
+3. Put the numeric App ID in `release_app_id` in
+   [`scripts/repos.json`](../../scripts/repos.json), by pull request. For
+   `twr-release` it is already there. While it is a string starting with
+   `PLACEHOLDER` (a new organisation or a fork), `scripts/protect-repo.sh` refuses
+   to apply or check the `release tag creation` ruleset (it carries on with the rest
+   and exits 1).
 
 For each repository that adopts release-please (first `.github`):
 
@@ -380,7 +387,8 @@ For each repository that adopts release-please (first `.github`):
 2. In the repository, create the environment `release-please`:
    - deployment branches: `main` only, no required reviewers;
    - secret `RELEASE_APP_PRIVATE_KEY`: the App's private key;
-   - variable `RELEASE_APP_ID`: the App ID.
+   - variable `RELEASE_APP_CLIENT_ID`: the App's Client ID (not the numeric App ID,
+     which only `scripts/repos.json` needs).
 3. Delete the downloaded key file once every repository that needs it has it.
 4. Make sure the repository is in `scripts/repos.json`, then run
    `scripts/protect-repo.sh --check <owner/repo>`, the apply, and `--check` again.

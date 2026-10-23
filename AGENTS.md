@@ -51,7 +51,7 @@ call (`.github/workflows/`). A mistake here reaches every repository at once.
 `scripts/repos.json` lists every v2 repository and what it needs: its required
 checks (each name as GitHub reports it, such as `checks / checks`), approvals, code
 owners, Issues, release tag patterns, whether it publishes, and CodeQL's languages,
-and the release App's ID (`release_app_id`, a placeholder until the App exists).
+and the release App's numeric App ID (`release_app_id`).
 `scripts/protect-repo.sh` applies it. A new repository, or a check that a repository
 starts to require, is a change to that list in a PR; the maintainer merges it and
 runs the script. Agents never run it: it changes repository settings.
@@ -66,8 +66,9 @@ account isn't a reviewer. Turn it on once there is a second reviewer.
 ## Releases
 
 release-please keeps a release PR open from the Conventional Commits on `main`, as
-the organisation's release App (`twr-release`), whose key is in the repository's
-`release-please` environment. The maintainer merges it by hand, which tags `vX.Y.Z`
+the organisation's release App (`twr-release`), whose Client ID and key are in the
+repository's `release-please` environment (its numeric App ID is in
+`scripts/repos.json`, for the release tag ruleset). The maintainer merges it by hand, which tags `vX.Y.Z`
 and creates the GitHub release; only the App may create a release tag. The App's
 setup, and how a repository gets it, are in
 [`.github/workflows/README.md`](.github/workflows/README.md#the-repositorys-settings).

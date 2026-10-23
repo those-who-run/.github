@@ -34,9 +34,9 @@ name: release-please
 # calling repository and to the permissions release-please uses. A PR the App opens
 # starts the caller's CI through `pull_request` like any other, and the App is the
 # one bypass actor allowed to create a release tag (scripts/protect-repo.sh). The
-# App's ID and private key come from the caller's `release-please` environment
+# App's Client ID and private key come from the caller's `release-please` environment
 # (deployments from main only): the release-please job names that environment, so
-# GitHub resolves `vars.RELEASE_APP_ID` and `secrets.RELEASE_APP_PRIVATE_KEY` in the
+# GitHub resolves `vars.RELEASE_APP_CLIENT_ID` and `secrets.RELEASE_APP_PRIVATE_KEY` in the
 # caller's repository. The caller passes no secrets (no `secrets: inherit`): an
 # environment secret can't be passed through `workflow_call`, and nothing else here
 # needs one. Every other job uses the GITHUB_TOKEN with the permissions it lists.
@@ -80,7 +80,7 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    # The caller's environment, which holds the App's ID and private key and allows
+    # The caller's environment, which holds the App's Client ID and private key and allows
     # deployments from main only.
     environment: release-please
     # Nothing from the GITHUB_TOKEN: release-please writes with the App's token.
@@ -99,7 +99,7 @@ jobs:
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write # the release PR's branch, the v* tag and the GitHub release
           permission-pull-requests: write # the release PR

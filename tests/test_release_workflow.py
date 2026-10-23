@@ -290,11 +290,14 @@ def app_token_problems(workflow: str) -> list[str]:
         problems.append("the release-please job doesn't run in the release-please environment")
     if not APP_ACTION.search(rp):
         problems.append("the release-please job doesn't mint the token with a SHA-pinned create-github-app-token")
-    for needed in ("app-id: ${{ vars.RELEASE_APP_ID }}",
+    for needed in ("client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}",
                    "private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
                    "token: ${{ steps.app.outputs.token }}"):
         if needed not in rp:
             problems.append(f"the release-please job lacks `{needed}`")
+    # The App's Client ID, not the deprecated numeric `app-id` input.
+    if re.search(r"^\s+app-id:", workflow, re.M) or "RELEASE_APP_ID" in workflow:
+        problems.append("the token is minted with app-id, not client-id")
     # With neither set, the token reaches only the repository the run belongs to.
     if re.search(r"^          (owner|repositories):", rp, re.M):
         problems.append("the token is scoped beyond the calling repository")
@@ -354,11 +357,14 @@ class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
             "the App's token is referenced 2 times, not once": text.replace(
                 "    outputs:\n", "    outputs:\n      token: ${{ steps.app.outputs.token }}\n", 1),
             "the token is scoped beyond the calling repository": text.replace(
-                "          app-id:", "          owner: ${{ github.repository_owner }}\n          app-id:", 1),
+                "          client-id:", "          owner: ${{ github.repository_owner }}\n          client-id:", 1),
             "the release-please job doesn't run in the release-please environment": text.replace(
                 "    environment: release-please\n", "", 1),
+            "the token is minted with app-id, not client-id": text.replace(
+                "          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}",
+                "          app-id: ${{ vars.RELEASE_APP_ID }}", 1),
             "the token outlives the job": text.replace(
-                "          app-id:", "          skip-token-revoke: true\n          app-id:", 1),
+                "          client-id:", "          skip-token-revoke: true\n          client-id:", 1),
         }
         for message, broken in cases.items():
             with self.subTest(message):

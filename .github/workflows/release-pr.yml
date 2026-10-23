@@ -10,8 +10,9 @@ name: Release PR
 # footer sets the version by hand.
 #
 # release-please runs as the organisation's release App (twr-release), with the App's
-# ID and private key from this repository's `release-please` environment (main only,
-# no reviewers): the variable RELEASE_APP_ID and the secret RELEASE_APP_PRIVATE_KEY.
+# Client ID and private key from this repository's `release-please` environment (main
+# only, no reviewers): the variable RELEASE_APP_CLIENT_ID and the secret
+# RELEASE_APP_PRIVATE_KEY. The numeric App ID is in scripts/repos.json, for the ruleset.
 # The reusable job names the environment itself, so nothing is passed from here.
 #
 # workflow_dispatch is the way back if a merged release PR was not tagged (its label

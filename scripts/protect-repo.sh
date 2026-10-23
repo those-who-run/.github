@@ -44,12 +44,13 @@
 #                there is a second reviewer.
 # The top-level `maintainer` is the required reviewer of each `release` environment,
 # and the account each .github/CODEOWNERS must name in its catch-all `*` rule.
-# The top-level `release_app_id` is the App ID of the organisation's release App
-# (twr-release), the one actor that may create a release tag: release-please creates
-# them as that App. Until the App exists it is a string starting with PLACEHOLDER,
+# The top-level `release_app_id` is the numeric App ID of the organisation's release
+# App (twr-release), the one actor that may create a release tag: release-please
+# creates them as that App. (The workflow authenticates with the App's Client ID, from
+# the `release-please` environment; a ruleset needs the number.) Where no App exists
+# yet, such as a new organisation or a fork, it is a string starting with PLACEHOLDER,
 # and every run refuses the `release tag creation` ruleset (applying it and checking
-# it) in each repository, carries on with the rest, and exits 1. The maintainer sets
-# the number, from the App's settings page, by pull request.
+# it) in each repository, carries on with the rest, and exits 1.
 #
 # The options, for a repository not in the list (a one-off, such as outings):
 # --checks      status checks `main` must pass, separated by spaces. Leave it out for
@@ -209,7 +210,7 @@ maintainer=$(jq -r .maintainer <<<"$listed")
 release_app_id=$(jq -c .release_app_id <<<"$listed")
 app_refused=""
 if [ "$(jq -r '.release_app_id | type' <<<"$listed")" != number ]; then
-  app_refused="release_app_id in $list is still a placeholder ($release_app_id): set it to the release App's App ID, from the App's settings page, by pull request"
+  app_refused="release_app_id in $list is still a placeholder ($release_app_id): set it to the release App's numeric App ID, from the App's settings page, by pull request"
   echo "warning: $app_refused. The 'release tag creation' ruleset is refused in every repository, and the run exits 1." >&2
 fi
 

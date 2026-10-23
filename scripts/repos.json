@@ -1,6 +1,6 @@
 {
   "maintainer": "ciaranRoche",
-  "release_app_id": "PLACEHOLDER: twr-release's App ID, set by the maintainer once the App exists",
+  "release_app_id": 5441388,
   "repositories": {
     "those-who-run/.github": {
       "checks": ["test", "checks / checks"],
