@@ -5,7 +5,9 @@ The stub answers the reads the script makes in the shapes GitHub's REST API retu
 them, applies its writes, and logs every call. That is enough to see what a run would
 send, that a second run changes nothing, and that --check reports a difference
 without writing anything. Lists come back in pages of PAGE, as GitHub's do (30 to a
-page there), so a read that doesn't paginate misses what is on a later page.
+page there), so a read that doesn't paginate misses what is on a later page. A write
+can be made to fail with GitHub's error body (state["fail"]), to see that the run
+carries on past it.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "protect-repo.sh"
 LIST = ROOT / "scripts" / "repos.json"
 MAINTAINER_ID = 1001
+# The release App's ID in the lists these tests write; repos.json holds a placeholder.
+APP_ID = 424242
 PAGE = 2
 
 STUB = r'''
@@ -50,6 +54,17 @@ while i < len(args):
         call["fields"][k] = v; i += 2
     else:
         call["path"] = a; i += 1
+
+# A write GitHub refuses: its error body on stdout and gh's summary on stderr, as gh
+# prints them.
+for rule in state.get("fail", []):
+    if call["method"] == rule["method"] and re.search(rule["path"], call["path"]):
+        call["failed"] = True
+        with open(log_path, "a") as log:
+            log.write(json.dumps(call) + "\n")
+        print(json.dumps({"message": rule["message"], "errors": rule.get("errors", []), "status": "422"}))
+        print(f"gh: {rule['message']} (HTTP 422)", file=sys.stderr)
+        sys.exit(1)
 
 def done(body=None, status=0):
     with open(log_path, "a") as log:
@@ -223,6 +238,11 @@ class Run:
     def writes(self):
         return [c for c in self.calls if c["method"] != "GET"]
 
+    @property
+    def written(self):
+        """The writes GitHub accepted."""
+        return [c for c in self.writes if not c.get("failed")]
+
     def sent(self, path_end):
         return [c for c in self.writes if c["path"].endswith(path_end)]
 
@@ -239,17 +259,24 @@ class ProtectRepo(unittest.TestCase):
         self.calls_path = tmp / "calls.jsonl"
         self.list_path = tmp / "repos.json"
         self.state = {"repos": {}, "users": {"ciaranRoche": MAINTAINER_ID}, "next_id": 100}
+        # The list in the repository with the App's ID set, for one-off runs: with
+        # the placeholder every run refuses the creation ruleset (tested on its own).
+        self.list_with_app = tmp / "repos-with-app.json"
+        listed = json.loads(LIST.read_text())
+        listed["release_app_id"] = APP_ID
+        self.list_with_app.write_text(json.dumps(listed))
         self.env = dict(os.environ, PATH=f"{tmp}{os.pathsep}{os.environ['PATH']}",
                         GH_STATE=str(self.state_path), GH_CALLS=str(self.calls_path))
 
-    def write_list(self, repositories, maintainer="ciaranRoche"):
-        self.list_path.write_text(json.dumps({"maintainer": maintainer, "repositories": repositories}))
+    def write_list(self, repositories, maintainer="ciaranRoche", release_app_id=APP_ID):
+        self.list_path.write_text(json.dumps(
+            {"maintainer": maintainer, "release_app_id": release_app_id, "repositories": repositories}))
 
     def run_script(self, *args, list_file=None):
         self.state_path.write_text(json.dumps(self.state))
         self.calls_path.write_text("")
         if list_file is None:
-            list_file = self.list_path if self.list_path.exists() else LIST
+            list_file = self.list_path if self.list_path.exists() else self.list_with_app
         result = subprocess.run(["bash", str(SCRIPT), *args, "--list", str(list_file)],
                                 env=self.env, capture_output=True, text=True, check=False)
         calls = [json.loads(line) for line in self.calls_path.read_text().splitlines()]
@@ -333,10 +360,40 @@ class ProtectRepo(unittest.TestCase):
         listed = json.loads(LIST.read_text())["repositories"]
         for name in listed:
             self.state["repos"][name] = fresh_repo()
-        run = self.run_script("--all", list_file=LIST)
+        # With the App's ID set, as the maintainer sets it once the App exists.
+        run = self.run_script("--all", list_file=self.list_with_app)
         self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(self.run_script("--check", "--all", list_file=self.list_with_app).code, 0)
         self.assertNotIn("those-who-run/those-who-run", listed)
         self.assertEqual(listed["those-who-run/.github"]["checks"][:2], ["test", "checks / checks"])
+
+    def test_the_list_in_the_repository_holds_a_placeholder_for_the_app(self):
+        listed = json.loads(LIST.read_text())
+        self.assertIsInstance(listed["release_app_id"], str)
+        self.assertTrue(listed["release_app_id"].startswith("PLACEHOLDER"))
+        for name in listed["repositories"]:
+            self.state["repos"][name] = fresh_repo()
+        # Everything but the creation ruleset applies; the run exits 1.
+        run = self.run_script("--all", list_file=LIST)
+        self.assertEqual(run.code, 1, run.err)
+        for name in listed["repositories"]:
+            self.assertIn(f"{name}: refused: ruleset 'release tag creation': release_app_id", run.err)
+        self.assertEqual(run.err.count("refused:"), len(listed["repositories"]))
+        names = {r["name"] for r in self.state["repos"]["those-who-run/.github"]["_rulesets"]}
+        self.assertEqual(names, {"main", "release tags"})
+
+    def test_github_needs_no_actions_prs_and_runs_codeql_on_go(self):
+        dotgithub = json.loads(LIST.read_text())["repositories"]["those-who-run/.github"]
+        # release-please opens its PR as the App, so Actions needn't open PRs.
+        self.assertIs(dotgithub["actions_prs"], False)
+        # The Go fixture that tests go.yml is Go code CodeQL reads.
+        self.assertIn("go", dotgithub["codeql"])
+        self.state["repos"]["those-who-run/.github"] = fresh_repo()
+        run = self.run_script("those-who-run/.github", list_file=self.list_with_app)
+        self.assertEqual(run.code, 0, run.err)
+        repo = self.state["repos"]["those-who-run/.github"]
+        self.assertEqual(sorted(repo["_codeql"]["languages"]), ["actions", "go", "python"])
+        self.assertIs(repo["_workflow"]["can_approve_pull_request_reviews"], False)
 
     def test_listed_check_names_reach_github_whole(self):
         self.write_list({"example/repo": entry(checks=["test", "checks / checks", "image / build"])})
@@ -373,7 +430,22 @@ class ProtectRepo(unittest.TestCase):
             "not an owner/repo name": {"example repo": entry()},
             "listed twice": {"example/repo": entry(), "Example/Repo": entry()},
         }
+        app_cases = {
+            "release_app_id must be": None,
+            "release_app_id must be the": "424242",
+            "release_app_id must be the release": 0,
+            "release_app_id must be the release App's": 4.5,
+            "release_app_id must be the release App's App ID": "TODO",
+        }
         self.state["repos"]["example/repo"] = fresh_repo()
+        for message, value in app_cases.items():
+            with self.subTest(message):
+                self.write_list({"example/repo": entry()}, release_app_id=value)
+                for args in (["--all"], ["--check", "--all"], ["example/repo"]):
+                    run = self.run_script(*args)
+                    self.assertEqual(run.code, 2, run.out)
+                    self.assertIn(message, run.err)
+                    self.assertEqual(run.calls, [])
         for message, repositories in cases.items():
             with self.subTest(message):
                 self.write_list(repositories)
@@ -426,7 +498,7 @@ class ProtectRepo(unittest.TestCase):
 
     # What an apply sets.
 
-    def test_release_tags_never_move_and_only_actions_creates_them(self):
+    def test_release_tags_never_move_and_only_the_app_creates_them(self):
         self.write_list({"example/repo": entry(tags=["v*", "gen/go/v*"])})
         self.state["repos"]["example/repo"] = fresh_repo()
         run = self.run_script("--all")
@@ -440,8 +512,128 @@ class ProtectRepo(unittest.TestCase):
         creation = self.ruleset("example/repo", "release tag creation")
         self.assertEqual(creation["conditions"]["ref_name"]["include"], include)
         self.assertEqual(creation["rules"], [{"type": "creation"}])
+        # The App, by the ID in the list, is the only bypass actor.
         self.assertEqual(creation["bypass_actors"],
-                         [{"actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always"}])
+                         [{"actor_id": APP_ID, "actor_type": "Integration", "bypass_mode": "always"}])
+        self.write_list({"example/repo": entry()}, release_app_id=7)
+        self.assertEqual(self.run_script("--check", "--all").code, 1)
+        self.assertEqual(self.run_script("--all").code, 0)
+        self.assertEqual(self.ruleset("example/repo", "release tag creation")["bypass_actors"],
+                         [{"actor_id": 7, "actor_type": "Integration", "bypass_mode": "always"}])
+
+    def test_a_one_off_takes_the_app_from_the_list(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--approvals", "1")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(self.ruleset("example/repo", "release tag creation")["bypass_actors"],
+                         [{"actor_id": APP_ID, "actor_type": "Integration", "bypass_mode": "always"}])
+
+    # The App's ID still a placeholder.
+
+    def test_a_placeholder_app_id_refuses_the_creation_ruleset(self):
+        placeholder = "PLACEHOLDER: the App's ID"
+        self.write_list({"example/a": entry(), "example/b": entry()}, release_app_id=placeholder)
+        for args in (["--all"], ["example/a"], ["--check", "--all"], ["--check", "example/a"]):
+            with self.subTest(args=args):
+                self.state["repos"]["example/a"] = fresh_repo()
+                self.state["repos"]["example/b"] = fresh_repo()
+                run = self.run_script(*args)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn("release_app_id in", run.err)
+                self.assertIn("is still a placeholder", run.err)
+                self.assertIn("example/a: refused: ruleset 'release tag creation'", run.err)
+                self.assertNotIn("drift: ruleset 'release tag creation'", run.out)
+                # The ruleset is never read, compared or written.
+                creation = [c for c in run.calls if "release tag creation" in json.dumps(c)]
+                self.assertEqual(creation, [])
+                for repo in ("example/a", "example/b"):
+                    names = {r["name"] for r in self.state["repos"][repo]["_rulesets"]}
+                    self.assertNotIn("release tag creation", names)
+                if "--check" in args:
+                    self.assertEqual(run.writes, [])
+                    self.assertNotIn("no drift", run.out)
+                else:
+                    # Everything else still applies.
+                    self.assertEqual({r["name"] for r in self.state["repos"]["example/a"]["_rulesets"]},
+                                     {"main", "release tags"})
+                    self.assertTrue(run.sent("/actions/permissions/workflow"))
+                    self.assertNotIn("example/a: no change", run.out)
+
+    def test_a_placeholder_app_id_refuses_a_one_off(self):
+        listed = json.loads(LIST.read_text())
+        listed["release_app_id"] = "PLACEHOLDER"
+        self.list_path.write_text(json.dumps(listed))
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo")
+        self.assertEqual(run.code, 1)
+        self.assertIn("example/repo: refused: ruleset 'release tag creation'", run.err)
+        self.assertEqual({r["name"] for r in self.state["repos"]["example/repo"]["_rulesets"]},
+                         {"main", "release tags"})
+
+    # A write GitHub refuses.
+
+    def test_a_failed_write_doesnt_stop_the_run(self):
+        self.write_list({"example/a": entry(codeql=["go"]), "example/b": entry(codeql=["go"])})
+        self.state["repos"]["example/a"] = fresh_repo()
+        self.state["repos"]["example/b"] = fresh_repo()
+        self.state["fail"] = [
+            {"method": "POST", "path": r"^repos/example/a/rulesets$",
+             "message": "Validation Failed", "errors": ["Actor is not a valid bypass actor"]},
+            {"method": "PUT", "path": r"^repos/example/a/vulnerability-alerts$",
+             "message": "Resource not accessible by integration"},
+        ]
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        # GitHub's message for each failure, with its field errors.
+        self.assertIn("example/a: error: gh api -X POST repos/example/a/rulesets: "
+                      "Validation Failed; Actor is not a valid bypass actor", run.err)
+        self.assertIn("example/a: error: gh api -X PUT repos/example/a/vulnerability-alerts: "
+                      "Resource not accessible by integration", run.err)
+        self.assertIn("example/a: ruleset 'main': not changed: GitHub refused a write", run.err)
+        self.assertIn("example/a: security: not changed", run.err)
+        self.assertIn("failed:", run.err)
+        # Every ruleset was tried, and the settings after them were still written.
+        self.assertEqual(len([c for c in run.sent("/rulesets") if c["path"] == "repos/example/a/rulesets"]), 3)
+        a = self.state["repos"]["example/a"]
+        self.assertEqual(a["_workflow"]["default_workflow_permissions"], "read")
+        self.assertEqual(a["_codeql"]["state"], "configured")
+        # The security writes after the failed one went ahead too.
+        self.assertIs(a["_pvr"], True)
+        self.assertEqual(a["security_and_analysis"]["secret_scanning"]["status"], "enabled")
+        # The next repository was applied in full.
+        b = self.state["repos"]["example/b"]
+        self.assertEqual({r["name"] for r in b["_rulesets"]}, {"main", "release tags", "release tag creation"})
+        self.assertIs(b["_alerts"], True)
+        self.assertEqual(b["_codeql"]["state"], "configured")
+        # Once GitHub accepts the writes, a run completes and writes again only the
+        # settings that failed (security as a whole, since it is one setting).
+        self.state["fail"] = []
+        again = self.run_script("--all")
+        self.assertEqual(again.code, 0, again.err)
+        self.assertIn("example/b: no change", again.out)
+        self.assertIn("example/a: ruleset 'main': changed", again.out)
+        self.assertIn("example/a: security: changed", again.out)
+        self.assertEqual({c["path"] for c in again.written},
+                         {"repos/example/a/rulesets", "repos/example/a",
+                          "repos/example/a/vulnerability-alerts",
+                          "repos/example/a/private-vulnerability-reporting"})
+        self.assertEqual(self.run_script("--all").writes, [])
+
+    def test_a_failed_environment_write_is_reported_and_the_run_goes_on(self):
+        self.write_list({"example/a": entry(publishes=True), "example/b": entry(publishes=True)})
+        self.state["repos"]["example/a"] = fresh_repo()
+        self.state["repos"]["example/b"] = fresh_repo()
+        self.state["fail"] = [{"method": "PUT", "path": r"^repos/example/a/environments/release$",
+                               "message": "Validation Failed", "errors": [{"message": "reviewers is invalid"}]}]
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 1)
+        self.assertIn("Validation Failed; reviewers is invalid", run.err)
+        self.assertIn("example/a: release environment: not changed", run.err)
+        # The branch policies wait for the environment; the rest goes on.
+        self.assertFalse(run.sent("repos/example/a/environments/release/deployment-branch-policies"))
+        self.assertEqual(self.state["repos"]["example/a"]["_codeql"]["state"], "not-configured")
+        self.assertTrue(run.sent("repos/example/b/environments/release/deployment-branch-policies"))
+        self.assertIn("example/b: release environment: changed", run.out)
 
     def test_issues_follow_the_list(self):
         self.write_list({"example/on": entry(issues=True), "example/off": entry(issues=False)})

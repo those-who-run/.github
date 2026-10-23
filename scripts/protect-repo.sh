@@ -26,8 +26,9 @@
 #   actions      whether Actions is on.
 #   approvals    approving reviews a pull request needs (see --approvals).
 #   code_owners  require a code owner's approval (see --code-owners).
-#   actions_prs  Actions may create and approve PRs (see --actions-prs), for
-#                repositories that use release-please.
+#   actions_prs  Actions may create and approve PRs (see --actions-prs). Not needed
+#                for release-please, which opens its PR as the release App; false
+#                unless a workflow opens PRs with the GITHUB_TOKEN.
 #   issues       whether Issues is on: only in paddock, where every issue lives.
 #   publishes    whether it publishes, and so has a `release` environment.
 #   tags         its release tag patterns, such as "v*" or "gen/go/v*".
@@ -43,6 +44,12 @@
 #                there is a second reviewer.
 # The top-level `maintainer` is the required reviewer of each `release` environment,
 # and the account each .github/CODEOWNERS must name in its catch-all `*` rule.
+# The top-level `release_app_id` is the App ID of the organisation's release App
+# (twr-release), the one actor that may create a release tag: release-please creates
+# them as that App. Until the App exists it is a string starting with PLACEHOLDER,
+# and every run refuses the `release tag creation` ruleset (applying it and checking
+# it) in each repository, carries on with the rest, and exits 1. The maintainer sets
+# the number, from the App's settings page, by pull request.
 #
 # The options, for a repository not in the list (a one-off, such as outings):
 # --checks      status checks `main` must pass, separated by spaces. Leave it out for
@@ -60,15 +67,15 @@
 #               turned on, for release-please: an approval by github-actions[bot] or
 #               an agent's bot account then counts for nothing, since neither is a
 #               code owner.
-# --actions-prs turn "Allow GitHub Actions to create and approve pull requests" on,
-#               so release-please can open its PR (default off: each run turns it
-#               off). Only with --code-owners: with the setting on, a workflow's
-#               token can approve a PR, and code-owner review is what stops that
-#               approval counting. Record it for every repo that uses release-please,
-#               or a later run turns the setting off again.
+# --actions-prs turn "Allow GitHub Actions to create and approve pull requests" on
+#               (default off: each run turns it off). Not needed for release-please,
+#               which opens its PR as the release App. Only with --code-owners: with
+#               the setting on, a workflow's token can approve a PR, and code-owner
+#               review is what stops that approval counting.
 # --no-actions  turn Actions off (repos with no workflows, like outings).
-# A one-off run protects release tags matching v* (creation by GitHub Actions only,
-# as for a listed repository) and leaves Issues and CodeQL as they are.
+# A one-off run protects release tags matching v* (creation by the release App only,
+# as for a listed repository, with the App ID from the list) and leaves Issues and
+# CodeQL as they are.
 #
 # --check reads each repository's settings and prints what differs from the list,
 # changing nothing; it exits 1 on any difference. Where code_owners is on, it also
@@ -77,6 +84,13 @@
 # so --check is only complete with an admin login, and it warns when it isn't.
 # Without --check, each setting is written only where it differs, so a second run in
 # a row reports no change.
+#
+# Failures. A bad list or bad options, or a repository that can't be applied (no admin
+# rights, or actions_prs without a CODEOWNERS file), stop the run with exit 2 before
+# anything is read or changed. Once writing starts, a write GitHub refuses doesn't stop
+# the run: the script prints GitHub's message, carries on with the next setting and
+# the next repository, and exits 1 at the end. So does a refused `release tag creation`
+# ruleset (release_app_id still a placeholder). --check exits 1 on drift or a refusal.
 #
 # Needs: gh and jq.
 set -euo pipefail
@@ -134,6 +148,7 @@ esac
 # langs is what the default-setup PATCH accepts in GitHub's published REST
 # description, so a language it would refuse fails here, before any repository changes.
 VALIDATE='
+def app_id: (type == "number" and . > 0 and . == floor) or (type == "string" and startswith("PLACEHOLDER"));
 def langs: ["actions","c-cpp","csharp","go","java-kotlin","javascript-typescript","python","ruby","swift"];
 def fields: ["checks","actions","approvals","code_owners","actions_prs","issues","publishes","tags","codeql"];
 def optional: ["prevent_self_review"];
@@ -169,9 +184,12 @@ def repo($r):
     (if .actions != true and ((.codeql // []) | length) > 0 then "\($r): codeql needs actions: default setup runs on Actions" else empty end)
   end;
 if type != "object" then "the list must be a JSON object" else
-  ((keys - ["maintainer","repositories"])[] | "unknown top-level field \(.)"),
+  ((keys - ["maintainer","release_app_id","repositories"])[] | "unknown top-level field \(.)"),
   (if (.maintainer | type) != "string" or (.maintainer | test("^[A-Za-z0-9-]+$") | not)
    then "maintainer must be a GitHub login" else empty end),
+  (if (.release_app_id | app_id | not)
+   then "release_app_id must be the release App'"'"'s App ID, a whole number, or a string starting with PLACEHOLDER until the App exists"
+   else empty end),
   (if (.repositories | type) != "object" or (.repositories | length) == 0
    then "repositories must name at least one repository"
    else .repositories | to_entries[] |
@@ -188,6 +206,12 @@ jq -e . >/dev/null 2>&1 <<<"$listed" || fail "$list is not JSON"
 problems=$(jq -r --argjson strict true "$VALIDATE" <<<"$listed")
 [ -z "$problems" ] || fail "$list: $problems"
 maintainer=$(jq -r .maintainer <<<"$listed")
+release_app_id=$(jq -c .release_app_id <<<"$listed")
+app_refused=""
+if [ "$(jq -r '.release_app_id | type' <<<"$listed")" != number ]; then
+  app_refused="release_app_id in $list is still a placeholder ($release_app_id): set it to the release App's App ID, from the App's settings page, by pull request"
+  echo "warning: $app_refused. The 'release tag creation' ruleset is refused in every repository, and the run exits 1." >&2
+fi
 
 # The repositories to protect, one compact JSON object each: {"repo": ..., settings}.
 if [ "$all" = true ]; then
@@ -205,8 +229,8 @@ else
       {repo: $r, checks: $checks, actions: $actions, approvals: $approvals,
        code_owners: $code_owners, actions_prs: $actions_prs, issues: null,
        publishes: false, prevent_self_review: false, tags: ["v*"], codeql: null}' --args ${f_checks[@]+"${f_checks[@]}"})
-    problems=$(jq -r --argjson strict false --arg m "$maintainer" \
-      '{maintainer: $m, repositories: {(.repo): del(.repo)}} | '"$VALIDATE" <<<"$targets")
+    problems=$(jq -r --argjson strict false --arg m "$maintainer" --argjson app "$release_app_id" \
+      '{maintainer: $m, release_app_id: $app, repositories: {(.repo): del(.repo)}} | '"$VALIDATE" <<<"$targets")
     [ -z "$problems" ] || fail "${problems//actions_prs needs code_owners/--actions-prs needs --code-owners}"
   fi
 fi
@@ -273,13 +297,39 @@ reconcile() {
   elif [ "$mode" = check ]; then
     jq -nr --argjson w "$want" --argjson h "$have" --arg p "$repo: drift: $name: " "$DIFF"
     drift=true
-  else
-    "$@"
+  elif "$@"; then
     say "$name: changed"
     changed=true
+  else
+    say "$name: not changed: GitHub refused a write (its message is above)" >&2
+    failed=true
+    repo_failed=true
   fi
 }
 not_checked() { say "$1: not checked (reading it needs admin rights)"; }
+# api ARGS...: gh api, for every write (and the reads a writer needs), which may fail
+# without stopping the run. The writers run as a condition (reconcile's `elif "$@"`),
+# where bash ignores set -e, so each call is checked here and by its caller. On a
+# failure it prints the call and GitHub's message, with any field errors it lists,
+# and returns non-zero.
+api() {
+  local body status=0 what="" msg a
+  body=$(gh api "$@" 2>"$gh_err") || status=$?
+  if [ "$status" -eq 0 ]; then
+    [ -z "$body" ] || printf '%s\n' "$body"
+    return 0
+  fi
+  for a in "$@"; do
+    case "$a" in
+      -X|GET|POST|PUT|PATCH|DELETE|repos/*|users/*) what+="${what:+ }$a" ;;
+    esac
+  done
+  msg=$(jq -rs '[.[] | objects | (.message // empty), (.errors[]?
+    | if type == "string" then . else (.message // tostring) end)] | join("; ")' <<<"$body" 2>/dev/null) || msg=""
+  [ -n "$msg" ] || msg=$(tr '\n' ' ' <"$gh_err")
+  say "error: gh api $what: ${msg:-no message (exit $status)}" >&2
+  return "$status"
+}
 # A read that may fail (404 for something absent, 403 without admin rights) prints
 # its fallback instead of gh's error body.
 read_or() {
@@ -290,16 +340,16 @@ read_or() {
 # turn, so these join the pages before anything looks for a name in them.
 rulesets() { gh api --paginate "repos/$repo/rulesets" | jq -cs 'add // []'; }
 branch_policies() {
-  gh api --paginate "repos/$repo/environments/release/deployment-branch-policies" |
+  api --paginate "repos/$repo/environments/release/deployment-branch-policies" |
     jq -cs '{branch_policies: (map(.branch_policies // []) | add // [])}'
 }
 
 write_ruleset() {
   local id=$1 body=$2
   if [ -n "$id" ]; then
-    gh api -X PUT "repos/$repo/rulesets/$id" --input - <<<"$body" >/dev/null
+    api -X PUT "repos/$repo/rulesets/$id" --input - <<<"$body" >/dev/null
   else
-    gh api -X POST "repos/$repo/rulesets" --input - <<<"$body" >/dev/null
+    api -X POST "repos/$repo/rulesets" --input - <<<"$body" >/dev/null
   fi
 }
 ruleset() {
@@ -320,58 +370,75 @@ ruleset() {
   reconcile "ruleset '$name'" "$want_c" "$have_c" write_ruleset "$id" "$body"
 }
 
+# Each writer returns non-zero if any of its writes failed. One that makes several
+# writes carries on past a failed one where the next doesn't depend on it.
 write_merge() {
-  gh api -X PATCH "repos/$repo" -F allow_squash_merge=true -F allow_merge_commit=false \
+  api -X PATCH "repos/$repo" -F allow_squash_merge=true -F allow_merge_commit=false \
     -F allow_rebase_merge=false -f squash_merge_commit_title=PR_TITLE \
     -F delete_branch_on_merge=true -F allow_auto_merge=true >/dev/null
 }
-write_issues() { gh api -X PATCH "repos/$repo" -F "has_issues=$1" >/dev/null; }
+write_issues() { api -X PATCH "repos/$repo" -F "has_issues=$1" >/dev/null; }
 write_security() {
-  gh api -X PATCH "repos/$repo" \
+  local rc=0
+  api -X PATCH "repos/$repo" \
     -f 'security_and_analysis[secret_scanning][status]=enabled' \
-    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' >/dev/null
-  gh api -X PUT "repos/$repo/vulnerability-alerts" >/dev/null
-  gh api -X PUT "repos/$repo/private-vulnerability-reporting" >/dev/null
+    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' >/dev/null || rc=1
+  api -X PUT "repos/$repo/vulnerability-alerts" >/dev/null || rc=1
+  api -X PUT "repos/$repo/private-vulnerability-reporting" >/dev/null || rc=1
+  return "$rc"
 }
 write_actions() {
-  local cfg=$1 public=$2
+  local cfg=$1 public=$2 rc=0
   if [ "$(jq -r .actions <<<"$cfg")" = false ]; then
-    gh api -X PUT "repos/$repo/actions/permissions" -F enabled=false >/dev/null
+    api -X PUT "repos/$repo/actions/permissions" -F enabled=false >/dev/null
     return
   fi
-  gh api -X PUT "repos/$repo/actions/permissions" -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true >/dev/null
+  # The allowlist and the token's permissions are written even if turning on the
+  # SHA-pinned selection failed: each narrows what workflows may do on its own.
+  api -X PUT "repos/$repo/actions/permissions" -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true >/dev/null || rc=1
   jq -n '{github_owned_allowed: true, verified_allowed: false, patterns_allowed: $ARGS.positional}' --args "${allowed_actions[@]}" |
-    gh api -X PUT "repos/$repo/actions/permissions/selected-actions" --input - >/dev/null
-  gh api -X PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=read \
-    -F "can_approve_pull_request_reviews=$(jq -r .actions_prs <<<"$cfg")" >/dev/null
+    api -X PUT "repos/$repo/actions/permissions/selected-actions" --input - >/dev/null || rc=1
+  api -X PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=read \
+    -F "can_approve_pull_request_reviews=$(jq -r .actions_prs <<<"$cfg")" >/dev/null || rc=1
   if [ "$public" = true ]; then
-    gh api -X PUT "repos/$repo/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null
+    api -X PUT "repos/$repo/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null || rc=1
   fi
+  return "$rc"
 }
 write_environment() {
-  local cfg=$1 id policies
-  id=$(gh api "users/$maintainer" | jq .id)
+  local cfg=$1 id policies rc=0
+  id=$(api "users/$maintainer" | jq -e .id) || return 1
+  # The branch policies belong to the environment, so they wait for it.
   jq --argjson id "$id" '{wait_timer: 0, prevent_self_review: .prevent_self_review,
     reviewers: [{type: "User", id: $id}], can_admins_bypass: false,
     deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}' <<<"$cfg" |
-    gh api -X PUT "repos/$repo/environments/release" --input - >/dev/null
-  policies=$(branch_policies)
+    api -X PUT "repos/$repo/environments/release" --input - >/dev/null || return 1
+  policies=$(branch_policies) || return 1
   # Add the missing policies, then remove any the list doesn't name.
   jq -c --argjson have "$policies" '[{name: "main", type: "branch"}] + [.tags[] | {name: ., type: "tag"}]
     | .[] | select(. as $p | $have.branch_policies | any(.name == $p.name and .type == $p.type) | not)' <<<"$cfg" |
-    while IFS= read -r p; do
-      gh api -X POST "repos/$repo/environments/release/deployment-branch-policies" --input - <<<"$p" >/dev/null
-    done
+    (
+      ok=0
+      while IFS= read -r p; do
+        api -X POST "repos/$repo/environments/release/deployment-branch-policies" --input - <<<"$p" >/dev/null || ok=1
+      done
+      exit "$ok"
+    ) || rc=1
   jq -r --argjson cfg "$cfg" '([{name: "main", type: "branch"}] + [$cfg.tags[] | {name: ., type: "tag"}]) as $want
     | .branch_policies[] | select(. as $p | $want | any(.name == $p.name and .type == $p.type) | not) | .id' <<<"$policies" |
-    while IFS= read -r pid; do
-      gh api -X DELETE "repos/$repo/environments/release/deployment-branch-policies/$pid" >/dev/null
-    done
+    (
+      ok=0
+      while IFS= read -r pid; do
+        api -X DELETE "repos/$repo/environments/release/deployment-branch-policies/$pid" >/dev/null || ok=1
+      done
+      exit "$ok"
+    ) || rc=1
+  return "$rc"
 }
 write_codeql() {
   jq -c 'if (.codeql | length) > 0 then {state: "configured", query_suite: "default", languages: .codeql}
          else {state: "not-configured"} end' <<<"$1" |
-    gh api -X PATCH "repos/$repo/code-scanning/default-setup" --input - >/dev/null
+    api -X PATCH "repos/$repo/code-scanning/default-setup" --input - >/dev/null
 }
 
 # Prints what is wrong with the repository's .github/CODEOWNERS, or nothing. Code-owner
@@ -414,6 +481,7 @@ protect() {
   local cfg=$1 info admin public checks approvals fresh tag_rules want have problem pol
   repo=$(jq -r .repo <<<"$cfg")
   info=$(gh api "repos/$repo")
+  repo_failed=false
   admin=$(jq -r '.permissions.admin // false' <<<"$info")
   public=$(jq -r '.private == false' <<<"$info")
   changed=false
@@ -423,8 +491,8 @@ protect() {
   fi
 
   # main: changes arrive by squashed pull request; no force-push, no deletion. Admins
-  # may bypass only through a pull request (release-please's PRs get no CI), which
-  # also lets them merge their own PRs when approvals are required. With reviews
+  # may bypass only through a pull request, which lets them merge their own PRs when
+  # approvals are required. With reviews
   # required, an approval is dropped by a later push and must come after it.
   # 15368 is the GitHub Actions app: only its runs can satisfy a required check.
   approvals=$(jq .approvals <<<"$cfg")
@@ -444,17 +512,26 @@ protect() {
            required_status_checks: $checks}}] else [] end)}')"
 
   # Release tags: nobody moves or deletes one, with no bypass at all. Creating one is
-  # restricted too, and only GitHub Actions (15368, the app release-please tags with
-  # through the workflow token) may: a bypass covers its own ruleset only, so creation
-  # has a ruleset of its own and the Actions bypass reaches nothing else.
+  # restricted too, and only the release App, which release-please runs as, may: a
+  # bypass covers its own ruleset only, so creation has a ruleset of its own and the
+  # App's bypass reaches nothing else. GitHub takes an App installed on the
+  # organisation as a bypass actor, by its App ID, but not the built-in Actions app.
+  # Refused while release_app_id is a placeholder: a ruleset with no bypass would stop
+  # every release, and one naming the wrong App would let it tag.
   tag_rules=$(jq -c '[.tags[] | "refs/tags/\(.)"] | {ref_name: {include: ., exclude: []}}' <<<"$cfg")
   ruleset "release tags" "$(jq -cn --argjson c "$tag_rules" '
     {name: "release tags", target: "tag", enforcement: "active", conditions: $c, bypass_actors: [],
      rules: [{type: "deletion"}, {type: "update"}, {type: "non_fast_forward"}]}')"
-  ruleset "release tag creation" "$(jq -cn --argjson c "$tag_rules" '
-    {name: "release tag creation", target: "tag", enforcement: "active", conditions: $c,
-     bypass_actors: [{actor_id: 15368, actor_type: "Integration", bypass_mode: "always"}],
-     rules: [{type: "creation"}]}')"
+  if [ -n "$app_refused" ]; then
+    say "refused: ruleset 'release tag creation': $app_refused" >&2
+    failed=true
+    repo_failed=true
+  else
+    ruleset "release tag creation" "$(jq -cn --argjson c "$tag_rules" --argjson app "$release_app_id" '
+      {name: "release tag creation", target: "tag", enforcement: "active", conditions: $c,
+       bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}],
+       rules: [{type: "creation"}]}')"
+  fi
 
   # Merging: squash only, the PR title as the commit, branches deleted, auto-merge allowed.
   want='{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false,"squash_merge_commit_title":"PR_TITLE","delete_branch_on_merge":true,"allow_auto_merge":true}'
@@ -577,7 +654,7 @@ protect() {
     fi
   fi
 
-  if [ "$mode" = apply ] && [ "$changed" = false ]; then
+  if [ "$mode" = apply ] && [ "$changed" = false ] && [ "$repo_failed" = false ]; then
     say "no change"
   fi
 }
@@ -586,14 +663,23 @@ repo=""
 drift=false
 changed=false
 incomplete=false
+failed=false
+repo_failed=false
+# gh's stderr for the last call, read by api() when GitHub refuses one.
+gh_err=$(mktemp)
+trap 'rm -f "$gh_err"' EXIT
 # The list is read on fd 3, so nothing in the loop can swallow it from stdin.
 while IFS= read -r cfg <&3; do preflight "$cfg"; done 3<<<"$targets"
 while IFS= read -r cfg <&3; do protect "$cfg"; done 3<<<"$targets"
+if [ "$failed" = true ]; then
+  echo "failed: GitHub refused a write, or a setting was refused, in at least one repository; the messages are above" >&2
+fi
 if [ "$mode" = check ]; then
-  if [ "$drift" = true ]; then exit 1; fi
+  if [ "$drift" = true ] || [ "$failed" = true ]; then exit 1; fi
   if [ "$incomplete" = true ]; then
     echo "no drift in what could be read: --check is only complete with an admin login"
   else
     echo "no drift"
   fi
 fi
+[ "$failed" = false ] || exit 1

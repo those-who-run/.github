@@ -156,9 +156,10 @@ that runs one. A PR cannot change the checks that judge it.
 
 ## release-please.yml
 
-Keeps a repository's release PR open with release-please, runs the repository's CI
-on it, and comments on it what changed since the last release in the places that
-need a look. The maintainer merges the release PR by hand; that run tags the merge
+Keeps a repository's release PR open with release-please, running as the
+organisation's release App (`twr-release`), and comments on it what changed since the
+last release in the places that need a look. The App opens the release PR, so the
+repository's CI runs on it through `pull_request` like any other PR. The maintainer merges the release PR by hand; that run tags the merge
 commit `vX.Y.Z`, creates the GitHub release, sets the outputs and dispatches the
 caller's release workflow on the new tag, which publishes. Nothing in it merges or
 arms auto-merge (`tests/test_release_workflow.py`).
@@ -170,7 +171,7 @@ It reads the caller's `release-please-config.json` and
 
 | Input | Default | What it is |
 | --- | --- | --- |
-| `ci-workflow` | `ci.yml` | The caller's CI workflow, by file name. It is dispatched on the release branch, so needs `workflow_dispatch:` in its `on:`. |
+| `ci-workflow` | `ci.yml` | No longer used: CI starts on the App's release PR through `pull_request`. Kept so a caller that still passes it doesn't fail; leave it out. |
 | `release-workflow` | `release.yml` | The caller's release workflow, by file name, dispatched on the new tag after a release. It needs `workflow_dispatch:` in its `on:` and must exist at the tag. Empty for a repository with nothing to publish. |
 | `watched-paths` | (none) | More paths for the digest to list, space-separated; a directory ends in `/`. |
 
@@ -184,19 +185,43 @@ It reads the caller's `release-please-config.json` and
 
 ### Jobs
 
-- `release-please`: every run. Opens or updates the release PR, or, on the merge
-  of one, tags and releases it. `contents: write` and `pull-requests: write`.
+- `release-please`: every run, in the caller's `release-please` environment. Mints
+  the release App's installation token with `actions/create-github-app-token`, and
+  release-please opens or updates the release PR with it, or, on the merge of one,
+  tags and releases it. Nothing from the `GITHUB_TOKEN` (`permissions: {}`).
 - `digest`: every run that releases nothing, while a release PR is open. One
   comment on the release PR, edited in place, from `scripts/release_digest.py`
   in this repository at the commit the caller pinned. `contents: read` and
   `pull-requests: write`.
-- `release-pr`: when release-please opened or updated the release PR. Dispatches
-  `ci-workflow` on its branch. `actions: write`.
 - `auto-merge-off`: every run. Turns off auto-merge on the open release PR if
   anyone armed it, with the GraphQL `disablePullRequestAutoMerge` mutation, which
   cannot merge. `pull-requests: write`.
 - `release`: when this run released, and `release-workflow` is set. Dispatches
   `release-workflow` on the new tag. `actions: write`.
+
+### The release App's token
+
+The token is minted in the `release-please` job and used only there, by
+release-please. It is:
+
+- scoped to the calling repository: `owner` and `repositories` are left unset, which
+  `actions/create-github-app-token` documents as the current repository only;
+- narrowed to what release-please uses: contents, pull requests and issues (its
+  labels), each `write`;
+- a step output, masked in the log, never a job output, an environment variable or a
+  file, and revoked when the job ends.
+
+The other jobs (`digest`, `auto-merge-off`, `release`) keep the `GITHUB_TOKEN` with the
+permissions listed above. `tests/test_release_workflow.py` checks all of this.
+
+The App's ID and private key come from the caller's `release-please` environment: the
+variable `RELEASE_APP_ID` and the secret `RELEASE_APP_PRIVATE_KEY`. The reusable
+`release-please` job names the environment itself (`environment: release-please`), so
+GitHub resolves both in the calling repository, as it does for any job in that
+environment. The caller passes no secrets, and doesn't use `secrets: inherit`: a
+calling job can't name an environment, an environment secret can't be passed through
+`workflow_call`, and no other job here needs a secret. The environment allows
+deployments from `main` only, so a run on any other branch can't read the key.
 
 ### The digest
 
@@ -259,25 +284,28 @@ concurrency:
 jobs:
   release:
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       actions: write
     uses: those-who-run/.github/.github/workflows/release-please.yml@<sha> # vX.Y.Z
     with:
-      ci-workflow: ci.yml
       release-workflow: release.yml
 ```
 
-The calling job grants the ceiling and each reusable job narrows it.
+The calling job grants the ceiling for the jobs that use the `GITHUB_TOKEN`, and each
+of them narrows it. It passes no secrets: the `release-please` job reads the App's
+from the repository's `release-please` environment.
 
 ### Publishing
 
 Publishing runs in the caller's release workflow (`release.yml`), which
 `release-please.yml` dispatches on the new tag. Its run is on the tag itself, so
 `github.ref` is `refs/tags/vX.Y.Z`. A workflow called directly from the release
-PR's run would see that run's ref, `main`. A tag made with the `GITHUB_TOKEN`
-starts no workflow by its push, but a dispatch made with that token does, so no
-other token is needed.
+PR's run would see that run's ref, `main`. The dispatch is made with the
+`GITHUB_TOKEN` (`actions: write`), which may start a `workflow_dispatch` run. The tag
+is made by the App, whose events do start workflows, but the handoff stays a
+dispatch: every caller's release workflow already takes one, and it doesn't depend on
+which events GitHub sends for a tag release-please creates through the releases API.
 
 `release.yml` is `on: workflow_dispatch`, so anyone with write access can also
 dispatch it, on `main` or any branch. So every job that publishes needs both of
@@ -327,23 +355,46 @@ release PR's run does on a release.
 
 ### The repository's settings
 
-release-please opens its PR with the `GITHUB_TOKEN`. For that, the repository needs
-"Allow GitHub Actions to create and approve pull requests" on. The same setting
-lets a workflow's token approve a PR, so it is safe only where `main`'s ruleset
-requires a code owner's approval: then an approval by `github-actions[bot]`, or by
-an agent's bot account, counts for nothing, since neither is a code owner. Apply
-both together:
+A repository that calls `release-please.yml` needs the release App installed and a
+`release-please` environment. Without them the `release-please` job fails at the
+token step, and nothing else changes. The maintainer sets them up; agents never
+handle the key or these settings.
 
-```sh
-scripts/protect-repo.sh those-who-run/<repo> --checks "<checks>" --code-owners --actions-prs
-```
+Once, for the organisation:
 
-The repository also needs a `.github/CODEOWNERS` naming the maintainer.
+1. Create the GitHub App `twr-release` in the organisation:
+   - webhook off;
+   - repository permissions: Contents read and write, Pull requests read and write,
+     Issues read and write (labels), Metadata read;
+   - installable only on this account.
+2. Note the App ID. Generate a private key.
+3. Set `release_app_id` in [`scripts/repos.json`](../../scripts/repos.json) to the App
+   ID, by pull request. Until then it is a placeholder, and
+   `scripts/protect-repo.sh` refuses to apply or check the `release tag creation`
+   ruleset (it carries on with the rest and exits 1).
 
-A PR opened by the `GITHUB_TOKEN` starts no workflow, which is why `release-pr`
-dispatches CI on it: the release PR's required checks then report. A merge by the
-`GITHUB_TOKEN` would not start the release run either, so the release PR is merged
-by a person, never by a workflow or auto-merge (v1's 0.7.6), and `auto-merge-off`
+For each repository that adopts release-please (first `.github`):
+
+1. Install the App on the repository (the App's settings, "Install App", then add the
+   repository to the installation's selected repositories).
+2. In the repository, create the environment `release-please`:
+   - deployment branches: `main` only, no required reviewers;
+   - secret `RELEASE_APP_PRIVATE_KEY`: the App's private key;
+   - variable `RELEASE_APP_ID`: the App ID.
+3. Delete the downloaded key file once every repository that needs it has it.
+4. Make sure the repository is in `scripts/repos.json`, then run
+   `scripts/protect-repo.sh --check <owner/repo>`, the apply, and `--check` again.
+   The `release tag creation` ruleset then lets only the App create a release tag.
+5. Confirm the next release PR is opened by `twr-release[bot]`, its required checks
+   run without a dispatch, and merging it creates the tag and release as the App.
+
+"Allow GitHub Actions to create and approve pull requests" stays off
+(`actions_prs: false`): the App opens the release PR, not the `GITHUB_TOKEN`.
+`scripts/protect-repo.sh --actions-prs` remains for a repository whose own workflows
+open PRs with the `GITHUB_TOKEN`, and isn't needed for release-please.
+
+The release PR is merged by a person, never by a workflow or auto-merge: a merge by
+the `GITHUB_TOKEN` would not start the release run (v1's 0.7.6), and `auto-merge-off`
 keeps auto-merge off.
 
 ## image.yml and image-publish.yml

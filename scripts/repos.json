@@ -1,16 +1,17 @@
 {
   "maintainer": "ciaranRoche",
+  "release_app_id": "PLACEHOLDER: twr-release's App ID, set by the maintainer once the App exists",
   "repositories": {
     "those-who-run/.github": {
       "checks": ["test", "checks / checks"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
-      "actions_prs": true,
+      "actions_prs": false,
       "issues": false,
       "publishes": false,
       "tags": ["v*"],
-      "codeql": ["actions", "python"]
+      "codeql": ["actions", "go", "python"]
     },
     "those-who-run/paddock": {
       "checks": [],

@@ -9,6 +9,11 @@ name: Release PR
 # footer, such as a changed workflow input) bumps the minor. A `Release-As: x.y.z`
 # footer sets the version by hand.
 #
+# release-please runs as the organisation's release App (twr-release), with the App's
+# ID and private key from this repository's `release-please` environment (main only,
+# no reviewers): the variable RELEASE_APP_ID and the secret RELEASE_APP_PRIVATE_KEY.
+# The reusable job names the environment itself, so nothing is passed from here.
+#
 # workflow_dispatch is the way back if a merged release PR was not tagged (its label
 # still says `autorelease: pending`): run this workflow on main and release-please
 # tags and releases as on a merge.
@@ -17,8 +22,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Nothing by default; the job grants what release-please.yml's jobs use, and each of
-# them narrows it.
+# Nothing by default; the job grants what release-please.yml's jobs use with the
+# GITHUB_TOKEN (the digest, auto-merge-off and the release dispatch), and each of them
+# narrows it. release-please itself writes with the App's token.
 permissions: {}
 
 # One run at a time; a newer push supersedes a queued one, never a running one.
@@ -29,12 +35,11 @@ concurrency:
 jobs:
   release:
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       actions: write
     uses: ./.github/workflows/release-please.yml
     with:
-      ci-workflow: ci.yml
       # Nothing to publish: callers pin a release by its tag's commit SHA.
       release-workflow: ""
       # The guard every repository copies, and the scripts run with an admin token.

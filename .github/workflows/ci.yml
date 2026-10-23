@@ -4,15 +4,12 @@ name: CI
 # `checks / checks`, the language-neutral checks every repository runs, from
 # checks.yml in this repository. Renaming either leaves `main` waiting for a check
 # that never reports. The other two, `go-fixture` and `go-check-cases`, test go.yml.
+# release-please's PR is opened by the organisation's release App, so it starts this
+# through `pull_request` like any other PR.
 on:
   pull_request:
   push:
     branches: [main]
-  # release-please's PR is made with the GITHUB_TOKEN, which starts no workflows;
-  # release-please.yml dispatches this on the release branch instead, so the PR's
-  # required check reports. That is all dispatch is for: `test` fails a dispatched
-  # run on any other ref.
-  workflow_dispatch:
 
 # Nothing by default; each job asks for what it uses.
 permissions: {}
@@ -29,20 +26,6 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Dispatch exists for release-please's PR only, whose branch starts with
-      # release-please's prefix (release-please--branches--main). A step, not a
-      # job-level `if:`, so the required job never ends up skipped.
-      # tests/test_ci_workflow.py runs this script against a few refs.
-      - name: Dispatched only on a release-please branch
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          case "$GITHUB_REF" in
-            refs/heads/release-please--*) echo "Dispatched on $GITHUB_REF." ;;
-            *)
-              echo "::error::CI is dispatched only on a release-please branch (refs/heads/release-please--*), not on '$GITHUB_REF'. Push to a PR instead."
-              exit 1
-              ;;
-          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -56,8 +39,8 @@ jobs:
       - name: Guard tests
         run: python -m unittest discover agent/tests
       # This repository's own checks: every external hook pinned to a commit SHA with
-      # a `frozen:` comment, checks.yml's job name and permissions, and the dispatch
-      # guard above. The `hook-pins` commit hook runs the same tests locally.
+      # a `frozen:` comment, checks.yml's job name and permissions, and the workflows'
+      # own shapes. The `hook-pins` commit hook runs the same tests locally.
       - name: Repository tests
         run: python -m unittest discover tests
       # The commit hooks' environments, which the zizmor check below installs,

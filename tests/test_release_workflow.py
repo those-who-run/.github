@@ -4,7 +4,12 @@ A release PR merged by a workflow's GITHUB_TOKEN starts no workflow, so the rele
 is never tagged (v1's 0.7.6); the maintainer merges it by hand. Each `run:` script is
 read with the guard's own parser and rules (agent/guard.py), so a `gh pr merge` is
 caught however it is written; the script's text is searched for the merge API and
-auto-merge too, and no step may use an action that arms auto-merge. Standard library only; CI's `test` job runs it:
+auto-merge too, and no step may use an action that arms auto-merge.
+
+The release App's token is minted and used only in the release-please job, in the
+caller's `release-please` environment, scoped to the calling repository; every other
+job keeps the GITHUB_TOKEN with its own permissions, and CI on the release PR is no
+longer dispatched. Standard library only; CI's `test` job runs it:
 
     python3 -m unittest discover tests
 """
@@ -18,6 +23,8 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+from workflow_yaml import jobs
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "release-please.yml"
@@ -187,7 +194,7 @@ class ReleaseIsDispatchedOnTheTag(unittest.TestCase):
 
     def test_the_dispatch_is_the_only_job_with_it_on_a_release(self):
         text = WORKFLOW.read_text()
-        others = [j for j in ("release-please", "digest", "release-pr") if DISPATCH in job(text, j)]
+        others = [j for j in ("release-please", "digest", "auto-merge-off") if DISPATCH in job(text, j)]
         self.assertEqual(others, [])
 
     def test_an_unconditional_dispatch_fails(self):
@@ -254,6 +261,115 @@ class TheDigestFailsClosed(unittest.TestCase):
             own_checkout(text[:start] + text[end:]),
             ["no step stops the job when job.workflow_repository or job.workflow_sha is empty"],
         )
+
+
+CALLER = ROOT / ".github" / "workflows" / "release-pr.yml"
+APP_ACTION = re.compile(
+    r"^        uses: actions/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+$", re.M
+)
+APP_TOKEN = "steps.app.outputs.token"
+# What each job keeps from the GITHUB_TOKEN; the release-please job takes none of it.
+PERMISSIONS = {
+    "release-please": {},
+    "digest": {"contents": "read", "pull-requests": "write"},
+    "auto-merge-off": {"pull-requests": "write"},
+    "release": {"actions": "write"},
+}
+
+
+def app_token_problems(workflow: str) -> list[str]:
+    """Where the release App's token is minted and used, other than as it should be:
+    minted and used only in the release-please job, in the `release-please`
+    environment, scoped to the calling repository, and never written anywhere."""
+    found = jobs(workflow)
+    problems = []
+    if set(found) != set(PERMISSIONS):
+        problems.append(f"the jobs are {sorted(found)}, not {sorted(PERMISSIONS)}")
+    rp = job(workflow, "release-please")
+    if found.get("release-please", {}).get("keys", {}).get("environment") != "release-please":
+        problems.append("the release-please job doesn't run in the release-please environment")
+    if not APP_ACTION.search(rp):
+        problems.append("the release-please job doesn't mint the token with a SHA-pinned create-github-app-token")
+    for needed in ("app-id: ${{ vars.RELEASE_APP_ID }}",
+                   "private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
+                   "token: ${{ steps.app.outputs.token }}"):
+        if needed not in rp:
+            problems.append(f"the release-please job lacks `{needed}`")
+    # With neither set, the token reaches only the repository the run belongs to.
+    if re.search(r"^          (owner|repositories):", rp, re.M):
+        problems.append("the token is scoped beyond the calling repository")
+    asked = set(re.findall(r"^          permission-([a-z-]+): (\w+)", rp, re.M))
+    if asked != {("contents", "write"), ("pull-requests", "write"), ("issues", "write")}:
+        problems.append(f"the token asks for {sorted(asked)}")
+    # Used once, by release-please; never in a script, an output, the environment or a file.
+    if workflow.count(APP_TOKEN) != 1:
+        problems.append(f"the App's token is referenced {workflow.count(APP_TOKEN)} times, not once")
+    if re.search(r"skip-token-revoke", rp):
+        problems.append("the token outlives the job")
+    for name in found:
+        block = job(workflow, name)
+        if name != "release-please":
+            if re.search(r"create-github-app-token|secrets\.|vars\.RELEASE_APP|steps\.app\.", block):
+                problems.append(f"{name} mints or uses the App's token or a secret")
+            if re.findall(r"GH_TOKEN: (.+)", block) != ["${{ github.token }}"] * len(re.findall(r"GH_TOKEN:", block)):
+                problems.append(f"{name} uses a token other than the GITHUB_TOKEN")
+        if name in PERMISSIONS:
+            have = found[name]["permissions"]
+            if found[name]["keys"].get("permissions") == "{}":
+                have = {}
+            if have != PERMISSIONS[name]:
+                problems.append(f"{name} has permissions {have}, not {PERMISSIONS[name]}")
+    for script in run_scripts(workflow):
+        if re.search(r"token|GITHUB_OUTPUT|GITHUB_ENV", script, re.I) and APP_TOKEN in script:
+            problems.append("a script handles the App's token")
+    return problems
+
+
+class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
+    def test_the_workflow(self):
+        self.assertEqual(app_token_problems(WORKFLOW.read_text()), [])
+
+    def test_there_is_no_ci_dispatch_on_the_release_branch(self):
+        text = WORKFLOW.read_text()
+        self.assertNotIn("release-pr", jobs(text))
+        self.assertNotIn("CI_WORKFLOW", text)
+        self.assertNotRegex(text, r"gh workflow run \"\$CI_WORKFLOW\"|--ref \"\$branch\"")
+        # The handoff on the tag is the only dispatch left.
+        self.assertEqual(text.count("gh workflow run"), 1)
+
+    def test_the_caller_passes_no_secrets(self):
+        caller = CALLER.read_text()
+        self.assertNotRegex(caller, r"(?m)^\s+secrets:")
+        self.assertNotIn("ci-workflow", caller)
+        self.assertNotIn("contents: write", caller)
+
+    def test_the_token_in_another_job_is_caught(self):
+        text = WORKFLOW.read_text()
+        cases = {
+            "digest mints or uses the App's token or a secret": text.replace(
+                "  digest:\n", "  digest:\n    env:\n      KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}\n", 1),
+            "auto-merge-off uses a token other than the GITHUB_TOKEN": text.replace(
+                "      GH_TOKEN: ${{ github.token }}\n    steps:\n      - name: Auto-merge off",
+                "      GH_TOKEN: ${{ needs.release-please.outputs.token }}\n    steps:\n      - name: Auto-merge off", 1),
+            "the App's token is referenced 2 times, not once": text.replace(
+                "    outputs:\n", "    outputs:\n      token: ${{ steps.app.outputs.token }}\n", 1),
+            "the token is scoped beyond the calling repository": text.replace(
+                "          app-id:", "          owner: ${{ github.repository_owner }}\n          app-id:", 1),
+            "the release-please job doesn't run in the release-please environment": text.replace(
+                "    environment: release-please\n", "", 1),
+            "the token outlives the job": text.replace(
+                "          app-id:", "          skip-token-revoke: true\n          app-id:", 1),
+        }
+        for message, broken in cases.items():
+            with self.subTest(message):
+                self.assertNotEqual(broken, text)
+                self.assertIn(message, app_token_problems(broken))
+
+    def test_a_job_with_more_permissions_is_caught(self):
+        text = WORKFLOW.read_text().replace(
+            "    # Nothing from the GITHUB_TOKEN: release-please writes with the App's token.\n    permissions: {}\n",
+            "    permissions:\n      contents: write\n", 1)
+        self.assertIn("release-please has permissions {'contents': 'write'}, not {}", app_token_problems(text))
 
 
 if __name__ == "__main__":

@@ -11,28 +11,35 @@ name: release-please
 #
 #   uses: those-who-run/.github/.github/workflows/release-please.yml@<sha> # vX.Y.Z
 #
-# Inputs: `ci-workflow`, the caller's CI file name, dispatched on the release branch;
-# `release-workflow`, the caller's publishing workflow, dispatched on the tag;
-# `watched-paths`, more paths for the digest. Outputs: `release_created` (`true`),
+# Inputs: `release-workflow`, the caller's publishing workflow, dispatched on the tag;
+# `watched-paths`, more paths for the digest; `ci-workflow`, no longer used (kept so
+# a caller that still passes it doesn't fail). Outputs: `release_created` (`true`),
 # `tag_name` (`v1.2.3`) and `version` (`1.2.3`), all empty on a run that releases
 # nothing. Callers, their permissions and the settings: .github/workflows/README.md.
 #
 # Jobs, by stable name (a caller's checks are `<caller job> / <job>`):
-# - release-please: opens or updates the release PR, or releases a merged one.
+# - release-please: opens or updates the release PR, or releases a merged one, as the
+#   organisation's release App.
 # - digest: comments on the release PR what changed since the last release in the
 #   places that need a human look (scripts/release_digest.py from this repository).
-# - release-pr: dispatches the caller's CI on the release branch.
 # - auto-merge-off: turns off auto-merge on the release PR if anyone armed it.
 # - release: on a release, dispatches the caller's release workflow on the new tag.
 #   A dispatch, not a call: a called workflow runs on the caller's ref (main), where
 #   a tag check and a `release` environment limited to v* tags would refuse it; the
-#   dispatched run is on the tag itself. A dispatch is also the one event the
-#   GITHUB_TOKEN may start, so no other token is needed.
+#   dispatched run is on the tag itself. The callers' release workflows already take
+#   a dispatch, so the handoff doesn't depend on which events the App's tag starts.
 #
-# Tokens: only the GITHUB_TOKEN. For it to open the release PR, the calling
-# repository needs "Allow GitHub Actions to create and approve pull requests", which
-# also lets a workflow's token approve a PR: so turn it on only with code-owner review
-# required on `main` (scripts/protect-repo.sh --code-owners --actions-prs).
+# Tokens. release-please runs as the organisation's GitHub App (twr-release), with a
+# short-lived installation token minted in the release-please job, scoped to the
+# calling repository and to the permissions release-please uses. A PR the App opens
+# starts the caller's CI through `pull_request` like any other, and the App is the
+# one bypass actor allowed to create a release tag (scripts/protect-repo.sh). The
+# App's ID and private key come from the caller's `release-please` environment
+# (deployments from main only): the release-please job names that environment, so
+# GitHub resolves `vars.RELEASE_APP_ID` and `secrets.RELEASE_APP_PRIVATE_KEY` in the
+# caller's repository. The caller passes no secrets (no `secrets: inherit`): an
+# environment secret can't be passed through `workflow_call`, and nothing else here
+# needs one. Every other job uses the GITHUB_TOKEN with the permissions it lists.
 #
 # Who merges: the maintainer, by hand. Nothing here merges or arms auto-merge, and
 # auto-merge-off disarms it: an auto-merge armed on the release PR merges it as the
@@ -41,8 +48,10 @@ name: release-please
 on:
   workflow_call:
     inputs:
+      # No longer used: CI starts on the App's release PR through `pull_request`.
+      # Kept so a caller that still passes it doesn't fail.
       ci-workflow:
-        description: The caller's CI workflow file name, run on the release PR's branch.
+        description: No longer used; CI runs on the release PR through pull_request.
         type: string
         default: ci.yml
       release-workflow:
@@ -71,24 +80,34 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # the release PR's branch, the v* tag and the GitHub release
-      # The release PR and its autorelease labels. No issues: write: the label
-      # endpoints take either "Issues" or "Pull requests" write (GitHub's REST docs,
-      # "Add labels to an issue" and "Create a label").
-      pull-requests: write
+    # The caller's environment, which holds the App's ID and private key and allows
+    # deployments from main only.
+    environment: release-please
+    # Nothing from the GITHUB_TOKEN: release-please writes with the App's token.
+    permissions: {}
     # Gated on release_created, so a run that releases nothing leaves all three empty
     # whatever the action reports.
     outputs:
       release_created: ${{ steps.rp.outputs.release_created == 'true' && 'true' || '' }}
       tag_name: ${{ steps.rp.outputs.release_created == 'true' && steps.rp.outputs.tag_name || '' }}
       version: ${{ steps.rp.outputs.release_created == 'true' && steps.rp.outputs.version || '' }}
-      prs_created: ${{ steps.rp.outputs.prs_created }}
-      pr: ${{ steps.rp.outputs.pr }}
     steps:
+      # With neither `owner` nor `repositories` set, the token reaches only the
+      # repository the run belongs to: the caller's. It is a step output, masked in
+      # logs, never a job output or a file, and revoked when the job ends.
+      - name: The release App's token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write # the release PR's branch, the v* tag and the GitHub release
+          permission-pull-requests: write # the release PR
+          permission-issues: write # its autorelease labels
       - id: rp
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
+          token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -175,30 +194,6 @@ jobs:
               -F "body=@$RUNNER_TEMP/digest.md" > /dev/null
             echo "Commented the digest on #$PR." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  # The release PR is made with the GITHUB_TOKEN, so no CI starts on it and its
-  # required checks would never report. A dispatch is the one event that token may
-  # start: run the caller's CI on the release branch whenever release-please changed
-  # it.
-  release-pr:
-    needs: release-please
-    if: needs.release-please.outputs.prs_created == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write # dispatches CI on the release branch
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR: ${{ needs.release-please.outputs.pr }}
-      CI_WORKFLOW: ${{ inputs.ci-workflow }}
-    steps:
-      - name: CI on the release branch
-        run: |
-          case "$CI_WORKFLOW" in
-            *[!A-Za-z0-9._-]* | "") echo "::error::ci-workflow is a file name: $CI_WORKFLOW"; exit 1 ;;
-          esac
-          branch=$(jq -r '.headBranchName' <<<"$PR")
-          gh workflow run "$CI_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$branch"
-          echo "Dispatched $CI_WORKFLOW on $branch." >> "$GITHUB_STEP_SUMMARY"
 
   # Auto-merge kept off on every run, not only when release-please touched the PR:
   # auto-merge armed after the PR's last update would otherwise stay armed. The
