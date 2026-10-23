@@ -127,8 +127,9 @@ What the preset decides (those-who-run/paddock#22):
 Dependabot stays on for security alerts only, which Renovate reads to open its
 fixes. A repository has no `dependabot.yml` version updates, so there are no
 duplicate PRs. This repository itself still has Dependabot's version updates
-(`.github/dependabot.yml`) until it moves to the preset. A repository overrides the preset in its own `renovate.json` only
-for a reason it gives there in a `description`.
+(`.github/dependabot.yml`) until it moves to the preset. A repository overrides the
+preset in its own `renovate.json` only for a reason it gives there in a
+`description`.
 
 `renovate-config-validator` checks the preset in the commit hooks (as a
 repository's config, `--no-global`), and `tests/test_renovate_preset.py` checks the
