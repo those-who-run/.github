@@ -69,7 +69,7 @@ brand-assets: $(BRAND_ENV) $(BARLOW_500)
 # The wordmark's outlines: 走り屋 from Noto Sans CJK JP, which is a system font here as
 # in v1, and the name from Barlow Semi Condensed. Run make brand-assets after it.
 wordmark: $(BRAND_ENV) $(BARLOW_SC)
-	@test -n "$(NOTO)" && test -f "$(NOTO)" || { echo "NOTO must name Noto Sans CJK's NotoSansCJK-VF.ttc (Fedora: google-noto-sans-cjk-vf-fonts; or https://github.com/notofonts/noto-cjk), e.g. make wordmark NOTO=/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc" >&2; exit 1; }
+	@test -n "$(NOTO)" && test -f "$(NOTO)" || { echo "NOTO must name Noto Sans CJK's NotoSansCJK-VF.ttc (from your system's Noto CJK fonts, or https://github.com/notofonts/noto-cjk), e.g. make wordmark NOTO=<path>/NotoSansCJK-VF.ttc" >&2; exit 1; }
 	$(BRAND_PY) scripts/wordmark.py "$(NOTO)" $(BARLOW_SC)
 
 clean:
