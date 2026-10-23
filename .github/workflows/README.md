@@ -1,15 +1,17 @@
 # Workflows
 
 The reusable workflows here are what every Those Who Run repository's CI and release
-call. Callers pin each one by the commit SHA of a release tag:
+call. Callers pin each one by the commit SHA of a release tag, with the tag in a
+comment:
 
 ```yaml
 uses: those-who-run/.github/.github/workflows/<name>.yml@<sha> # vX.Y.Z
 ```
 
 Rulesets require a reusable workflow's job by name, as `<caller job> / <job>`, so the
-job names below stay as they are. Adding a required input, removing or renaming one,
-or changing a default's meaning is a breaking change
+job names below stay as they are: a renamed job leaves every caller's `main` waiting
+for a check that never reports. Adding a required input, removing or renaming one, or
+changing a default's meaning is a breaking change
 ([AGENTS.md](../../AGENTS.md#workflows)).
 
 ## checks.yml
