@@ -108,7 +108,9 @@ jobs:
       # severity or above, or a licence outside the list. Dev packages count too:
       # they run in CI with a token. The list is v1's plus GPL-3.0, the project's own
       # licence. A few Go tool dependencies carry a notice outside it (CC-BY-3.0 in
-      # structtag, OFL-1.1 in chroma, Go's PATENTS grant in golang.org/x); the
+      # structtag, OFL-1.1 in chroma, Go's PATENTS grant in golang.org/x), and so
+      # does wcwidth (HPND-Markus-Kuhn, for the C code it derives from), which
+      # copier pulls in through prompt_toolkit for chassis's template check; the
       # action can only exempt a package from the licence check by its exact name,
       # so those are listed one by one and the notices stay off the global list.
       # The vulnerability check still covers them.
@@ -133,7 +135,7 @@ jobs:
             pkg:golang/golang.org/x/sync, pkg:golang/golang.org/x/sys,
             pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
             pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
-            pkg:golang/golang.org/x/vuln
+            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth
           show-openssf-scorecard: true
           comment-summary-in-pr: never
 

@@ -3,7 +3,7 @@
   "description": [
     "The shared Renovate preset for every Those Who Run v2 repository, which extends it pinned to a release: \"extends\": [\"github>those-who-run/.github#vX.Y.Z\"].",
     "Every update waits in one PR per repository per week, which the maintainer reviews and merges by hand; security fixes open at Renovate's next run, in a PR of their own.",
-    "The cooldown holds a version update until the release is 7 days old. A release without a timestamp (GHCR and other registries than Docker Hub publish none) is held until a rule exempts it, as the organisation's own images and workflows are below.",
+    "The cooldown holds a version update until the release is 7 days old. A release without a timestamp (GHCR and other registries than Docker Hub publish none) is held until a rule exempts it, as the organisation's own images, workflows and template are below.",
     "tests/test_renovate_preset.py checks the decided values below."
   ],
   "extends": ["group:all", "helpers:pinGitHubActionDigestsToSemver"],
@@ -53,6 +53,13 @@
       "description": "This repository's own releases: the reusable workflows every repository calls, and this preset's pin. Same principle as the images: the organisation wrote and reviewed them.",
       "matchDatasources": ["github-tags"],
       "matchPackageNames": ["those-who-run/.github"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "chassis's releases, which a repository made from the template takes through the copier manager. Its git-tags lookup has no release timestamps, so under the cooldown they would wait for ever. The URL is the one `copier copy` was given, with or without .git.",
+      "matchManagers": ["copier"],
+      "matchDatasources": ["git-tags"],
+      "matchPackageNames": ["https://github.com/those-who-run/chassis", "https://github.com/those-who-run/chassis.git"],
       "minimumReleaseAge": null
     }
   ]
