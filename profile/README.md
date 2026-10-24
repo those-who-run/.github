@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/those-who-run/.github/main/assets/banner-dark.svg">
+  <img src="https://raw.githubusercontent.com/those-who-run/.github/main/assets/banner-light.svg" alt="走り屋 Those Who Run" width="100%">
+</picture>
+
 # Those Who Run 走り屋
 
 A self-hosted voice race engineer for Gran Turismo 7. It listens to the game's telemetry, speaks lap times, fuel, position and pit calls into a Discord voice channel (so they reach a PSVR2 headset), posts a results card after each race, and serves a pit wall web app for looking back at sessions.
