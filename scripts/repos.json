@@ -23,6 +23,105 @@
       "publishes": false,
       "tags": ["v*"],
       "codeql": []
+    },
+    "those-who-run/chassis": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/contracts": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/salsa": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/ecu": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/logbook": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/shakedown-fangio": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/radio": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/pitwall": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
+    },
+    "those-who-run/dash": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
     }
   }
 }
