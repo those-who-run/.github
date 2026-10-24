@@ -3,7 +3,7 @@
 Every external hook runs code on the maintainer's machine at each commit, so it is
 pinned to a commit SHA with the tag in a `frozen:` comment, as in v1
 (tests/test_claude_hooks.py::test_external_hooks_are_pinned_to_a_commit). zizmor and
-actionlint don't read this file, and Dependabot keeps a pin but doesn't stop a hand
+actionlint don't read this file, and Renovate keeps a pin but doesn't stop a hand
 edit to `rev: v6.0.0`.
 
 Standard library only. CI's `test` job runs it, and so does the `hook-pins` commit
@@ -24,7 +24,8 @@ CONFIG = ROOT / ".pre-commit-config.yaml"
 # `repo: local` and `repo: meta` have no rev; every other repo must have one.
 REPO = re.compile(r"^\s*-\s*repo:\s*(\S+)\s*$")
 REV = re.compile(r"^\s*rev:\s*(.*)$")
-PINNED = re.compile(r"[0-9a-f]{40}\s+# frozen: v\d+(\.\d+)+")
+# The tag as the repository names it: most start with `v`, Renovate's hooks don't.
+PINNED = re.compile(r"[0-9a-f]{40}\s+# frozen: v?\d+(\.\d+)+")
 
 
 def bad_pins(text: str) -> list[str]:
@@ -43,7 +44,7 @@ def bad_pins(text: str) -> list[str]:
             if not PINNED.fullmatch(m.group(1).strip()):
                 problems.append(
                     f"line {number} ({repo}): rev must be a 40-character commit SHA "
-                    f"followed by `# frozen: vX.Y.Z`, not {m.group(1).strip()!r}"
+                    f"followed by `# frozen: <tag>`, not {m.group(1).strip()!r}"
                 )
     if not seen_rev:
         problems.append(f"{repo}: no rev")
@@ -75,6 +76,13 @@ class ExternalHooksArePinned(unittest.TestCase):
             "  - repo: local\n    hooks: []\n"
         )
         self.assertEqual(bad_pins(text), [])
+
+    def test_a_tag_without_v_passes(self):
+        text = f"repos:\n  - repo: https://x/y\n    rev: {'a' * 40}  # frozen: 44.148.3\n"
+        self.assertEqual(bad_pins(text), [])
+
+    def test_a_branch_in_the_frozen_comment_is_refused(self):
+        self.assertTrue(bad_pins(f"repos:\n  - repo: https://x/y\n    rev: {'a' * 40}  # frozen: main\n"))
 
 
 if __name__ == "__main__":

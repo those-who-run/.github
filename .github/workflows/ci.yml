@@ -19,7 +19,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Actions are pinned by commit SHA (the tag in the comment); Dependabot bumps them.
+# Actions are pinned by commit SHA (the tag in the comment); Renovate bumps them.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -39,8 +39,10 @@ jobs:
       - name: Guard tests
         run: python -m unittest discover agent/tests
       # This repository's own checks: every external hook pinned to a commit SHA with
-      # a `frozen:` comment, checks.yml's job name and permissions, and the workflows'
-      # own shapes. The `hook-pins` commit hook runs the same tests locally.
+      # a `frozen:` comment, checks.yml's job name and permissions, the workflows'
+      # own shapes and the Renovate preset's decided values (default.json; the
+      # `checks` job's commit hooks validate it with renovate-config-validator).
+      # The `hook-pins` commit hook runs the same tests locally.
       - name: Repository tests
         run: python -m unittest discover tests
       # The commit hooks' environments, which the zizmor check below installs,

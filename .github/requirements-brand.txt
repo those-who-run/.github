@@ -2,8 +2,8 @@
 # (scripts/brand_assets.py, scripts/wordmark.py): fontTools, and Brotli for the
 # woff2 fonts. Neither CI nor the tests need them: the tests check the committed
 # SVGs without fontTools. Each is pinned by version and sha256 and installed with
-# `pip install --require-hashes` into build/brand-venv; Dependabot bumps them with
-# requirements-ci.txt (.github/dependabot.yml). After a bump, run
+# `pip install --require-hashes` into build/brand-venv; Renovate bumps them with
+# requirements-ci.txt (renovate.json). After a bump, run
 # `make brand-assets` and commit what changes. To regenerate after changing a pin
 # by hand:
 #   printf 'fonttools==X.Y.Z\nbrotli==X.Y.Z\n' | uv pip compile - --generate-hashes \

@@ -9,8 +9,9 @@ apply here in full. This file adds only what is specific to `those-who-run/.gith
 The organisation's community files and profile, the scripts that protect each
 repository (`scripts/`), the canonical agent guard and settings that every repository
 copies (`agent/`), the reusable workflows that every repository's CI and release
-call (`.github/workflows/`), and the brand assets every README shows (`assets/`). A
-mistake here reaches every repository at once.
+call (`.github/workflows/`), the brand assets every README shows (`assets/`), and the
+Renovate preset every repository extends (`default.json`). A mistake here reaches
+every repository at once.
 
 ## Definition of done
 
@@ -95,6 +96,64 @@ These paths are what other repositories link to, so a rename breaks their README
 - Each reusable workflow has a section in
   [`.github/workflows/README.md`](.github/workflows/README.md): its inputs and its
   job names. It changes in the same PR as the workflow.
+
+## Dependency updates
+
+Every v2 repository gets its version updates from Renovate (Mend's hosted app,
+installed on the organisation), configured by the shared preset `default.json` here.
+A repository extends it from a `renovate.json` at its root, pinned to a release of
+this repository:
+
+```json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>those-who-run/.github#vX.Y.Z"]
+}
+```
+
+A change to the preset reaches a repository only through the PR that bumps that
+pin, which Renovate opens itself (its `renovate-config` manager updates a preset
+reference that names a tag) in the repository's weekly PR. This repository's own
+`renovate.json` extends the preset unpinned, from `main`: it is where the preset is
+written, so each change applies here first, before any repository takes it.
+
+What the preset decides (those-who-run/paddock#22):
+
+- One PR per repository per week, on Monday before 06:00 UTC, with every update in
+  it (majors included), titled `deps: update all dependencies`. The Dependency
+  Dashboard issue lists what is waiting.
+- A version update is offered once the release is 7 days old (14 for the commit
+  hooks, which run on the maintainer's machine), so a release pulled for being
+  malicious within that time doesn't reach the weekly PR. A newer release still in
+  its cooldown waits on the dashboard. The cooldown applies to version and digest
+  updates; Renovate doesn't apply it to pins, replacements, rollbacks or lock-file
+  maintenance.
+- A release without a timestamp can't be aged. GHCR and the other registries than
+  Docker Hub publish none, and under `minimumReleaseAgeBehaviour:
+  timestamp-required` their updates are held, listed under "Pending Status Checks"
+  on the dashboard, until a rule exempts them. The organisation's own images
+  (`ghcr.io/those-who-run/**`) and this repository's releases (the reusable
+  workflows and the preset's pin) are exempt from the cooldown, not from the
+  weekly schedule.
+- Security fixes for Dependabot alerts open at Renovate's next run on the
+  repository, one PR per dependency, outside the schedule and the cooldown. The
+  app needs read access to Dependabot alerts for this.
+- Nothing is auto-merged. Code-owner review applies to Renovate's PRs as to any.
+- Actions are pinned by commit SHA with the full tag in a comment; pre-commit hooks
+  keep their SHA and `# frozen:` tag; Go updates run `go mod tidy` and, for a major
+  version, rewrite the import paths.
+
+Dependabot alerts stay on in every v2 repository, and Renovate reads them to open
+its fixes. Dependabot security updates are turned off in each repository's settings
+(the maintainer changes them), and no v2 repository has a `dependabot.yml`, so each
+fix and each update arrives once, from Renovate. A repository overrides the preset
+in its own `renovate.json` only for a reason it gives there in a `description`.
+
+`renovate-config-validator` checks the preset and this repository's `renovate.json`
+in the commit hooks (as a repository's config, `--no-global`), and
+`tests/test_renovate_preset.py` checks the decided values above. A preset change
+applies here at Renovate's next run after the merge, and in other repositories
+once they take the release: review it like a workflow change.
 
 ## Repository protection
 

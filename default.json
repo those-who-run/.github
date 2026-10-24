@@ -1,0 +1,59 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "The shared Renovate preset for every Those Who Run v2 repository, which extends it pinned to a release: \"extends\": [\"github>those-who-run/.github#vX.Y.Z\"].",
+    "Every update waits in one PR per repository per week, which the maintainer reviews and merges by hand; security fixes open at Renovate's next run, in a PR of their own.",
+    "The cooldown holds a version update until the release is 7 days old. A release without a timestamp (GHCR and other registries than Docker Hub publish none) is held until a rule exempts it, as the organisation's own images and workflows are below.",
+    "tests/test_renovate_preset.py checks the decided values below."
+  ],
+  "extends": ["group:all", "helpers:pinGitHubActionDigestsToSemver"],
+  "schedule": ["* 0-5 * * 1"],
+  "separateMajorMinor": false,
+  "separateMultipleMajor": false,
+  "minimumReleaseAge": "7 days",
+  "minimumReleaseAgeBehaviour": "timestamp-required",
+  "internalChecksFilter": "strict",
+  "automerge": false,
+  "platformAutomerge": false,
+  "dependencyDashboard": true,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "deps",
+  "semanticCommitScope": null,
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "lockFileMaintenance": {
+    "description": "Off: it would open a PR of its own outside the weekly one.",
+    "enabled": false,
+    "automerge": false
+  },
+  "pre-commit": {
+    "description": "Off by default in Renovate. The hooks are pinned by commit SHA with the tag in a `# frozen:` comment, which Renovate keeps.",
+    "enabled": true
+  },
+  "vulnerabilityAlerts": {
+    "description": "Fixes for GitHub's Dependabot alerts: at Renovate's next run, in a PR of their own, not held by the schedule, the group or the cooldown, and not auto-merged. No `enabled` here: Renovate forces this object onto each alert's rule, and a forced `enabled: true` would override a repository's packageRules entry that disables a dependency.",
+    "schedule": [],
+    "groupName": null,
+    "minimumReleaseAge": null,
+    "automerge": false
+  },
+  "packageRules": [
+    {
+      "description": "The commit hooks run on the maintainer's machine at every commit, so they wait longer, as in v1.",
+      "matchManagers": ["pre-commit"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      "description": "The organisation's own images, which it builds. GHCR publishes no release timestamps, so under the cooldown they would wait for ever. timestamp-optional keeps them moving should a later rule set a cooldown again.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/those-who-run/**"],
+      "minimumReleaseAge": null,
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "This repository's own releases: the reusable workflows every repository calls, and this preset's pin. Same principle as the images: the organisation wrote and reviewed them.",
+      "matchDatasources": ["github-tags"],
+      "matchPackageNames": ["those-who-run/.github"],
+      "minimumReleaseAge": null
+    }
+  ]
+}
