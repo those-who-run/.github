@@ -132,9 +132,10 @@ What the preset decides (those-who-run/paddock#22):
   Docker Hub publish none, and under `minimumReleaseAgeBehaviour:
   timestamp-required` their updates are held, listed under "Pending Status Checks"
   on the dashboard, until a rule exempts them. The organisation's own images
-  (`ghcr.io/those-who-run/**`) and this repository's releases (the reusable
-  workflows and the preset's pin) are exempt from the cooldown, not from the
-  weekly schedule.
+  (`ghcr.io/those-who-run/**`), this repository's releases (the reusable
+  workflows and the preset's pin) and `chassis`'s releases (the template, through
+  the copier manager, whose git-tags lookup has no timestamps) are exempt from the
+  cooldown, not from the weekly schedule.
 - Security fixes for Dependabot alerts open at Renovate's next run on the
   repository, one PR per dependency, outside the schedule and the cooldown. The
   app needs read access to Dependabot alerts for this.
