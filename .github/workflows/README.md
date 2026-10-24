@@ -55,7 +55,8 @@ Dependency review fails on a known vulnerability of moderate severity or above, 
 licence outside its list: v1's list plus `GPL-3.0`, the project's own licence. A few
 Go tool dependencies carry a notice outside the list (CC-BY-3.0 in the structtag
 packages, OFL-1.1 in `github.com/alecthomas/chroma`, Go's PATENTS grant in
-`golang.org/x/*`). dependency-review-action can only exempt a package from the licence
+`golang.org/x/*`), and so does the Python package `wcwidth` (HPND-Markus-Kuhn),
+which copier needs for chassis's template check. dependency-review-action can only exempt a package from the licence
 check, by its exact name, so those packages are listed one by one in the workflow and
 the notices stay off the global list. They still get the vulnerability check.
 

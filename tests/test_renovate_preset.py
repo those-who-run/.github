@@ -42,6 +42,15 @@ EXEMPTIONS = [
         "matchPackageNames": ["those-who-run/.github"],
         "minimumReleaseAge": None,
     },
+    {
+        "matchManagers": ["copier"],
+        "matchDatasources": ["git-tags"],
+        "matchPackageNames": [
+            "https://github.com/those-who-run/chassis",
+            "https://github.com/those-who-run/chassis.git",
+        ],
+        "minimumReleaseAge": None,
+    },
 ]
 COOLDOWN_KEYS = ("minimumReleaseAge", "minimumReleaseAgeBehaviour", "internalChecksFilter")
 DURATION = re.compile(r"^(\d+) (day|days|week|weeks)$")
