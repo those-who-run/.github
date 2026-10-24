@@ -78,7 +78,7 @@ Job: `check`. Called from a caller job named `go`, the required check is
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `coverage-floor` | number | `90` | The lowest total statement coverage the tests may reach, in per cent. A package without tests counts as uncovered. |
+| `coverage-floor` | number | `90` | The lowest total statement coverage the tests may reach, in per cent. A package without tests counts as uncovered; a generated file (Go's `// Code generated … DO NOT EDIT.` line before its package clause) counts neither way. |
 | `working-directory` | string | `.` | The module's directory (the one with `go.mod`), from the repository root. |
 | `cgo` | boolean | `false` | Whether vet, lint and build run with cgo. It does not apply to the tests, which always run with cgo because the race detector needs it. So with `cgo: false`, a file behind `//go:build cgo` is tested but not built, and one behind `//go:build !cgo` is built but not tested. |
 
