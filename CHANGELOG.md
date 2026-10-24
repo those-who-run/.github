@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/those-who-run/.github/compare/v0.2.2...v0.2.3) (2026-10-24)
+
+
+### Features
+
+* **image:** pass the release version to the build as VERSION ([#23](https://github.com/those-who-run/.github/issues/23)) ([67ca431](https://github.com/those-who-run/.github/commit/67ca4313511e5deb20b7db5dce1e99f5fe69f901))
+
 ## [0.2.2](https://github.com/those-who-run/.github/compare/v0.2.1...v0.2.2) (2026-10-24)
 
 
