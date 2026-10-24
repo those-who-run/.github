@@ -14,7 +14,7 @@
       "codeql": ["actions", "go", "python"]
     },
     "those-who-run/paddock": {
-      "checks": [],
+      "checks": ["test", "checks / checks"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
