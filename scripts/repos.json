@@ -25,7 +25,7 @@
       "codeql": []
     },
     "those-who-run/chassis": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
