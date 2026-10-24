@@ -56,7 +56,9 @@ licence outside its list: v1's list plus `GPL-3.0`, the project's own licence. A
 Go tool dependencies carry a notice outside the list (CC-BY-3.0 in the structtag
 packages, OFL-1.1 in `github.com/alecthomas/chroma`, Go's PATENTS grant in
 `golang.org/x/*`), and so does the Python package `wcwidth` (HPND-Markus-Kuhn),
-which copier needs for chassis's template check. dependency-review-action can only exempt a package from the licence
+which copier needs for chassis's template check, and `github.com/opencontainers/go-digest`
+(CC-BY-SA-4.0 on its documentation), which buf needs in contracts' tools.
+dependency-review-action can only exempt a package from the licence
 check, by its exact name, so those packages are listed one by one in the workflow and
 the notices stay off the global list. They still get the vulnerability check.
 
@@ -78,7 +80,7 @@ Job: `check`. Called from a caller job named `go`, the required check is
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `coverage-floor` | number | `90` | The lowest total statement coverage the tests may reach, in per cent. A package without tests counts as uncovered. |
+| `coverage-floor` | number | `90` | The lowest total statement coverage the tests may reach, in per cent. A package without tests counts as uncovered; a generated file (Go's `// Code generated … DO NOT EDIT.` line before its package clause) counts neither way. |
 | `working-directory` | string | `.` | The module's directory (the one with `go.mod`), from the repository root. |
 | `cgo` | boolean | `false` | Whether vet, lint and build run with cgo. It does not apply to the tests, which always run with cgo because the race detector needs it. So with `cgo: false`, a file behind `//go:build cgo` is tested but not built, and one behind `//go:build !cgo` is built but not tested. |
 

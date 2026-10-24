@@ -110,7 +110,9 @@ jobs:
       # licence. A few Go tool dependencies carry a notice outside it (CC-BY-3.0 in
       # structtag, OFL-1.1 in chroma, Go's PATENTS grant in golang.org/x), and so
       # does wcwidth (HPND-Markus-Kuhn, for the C code it derives from), which
-      # copier pulls in through prompt_toolkit for chassis's template check; the
+      # copier pulls in through prompt_toolkit for chassis's template check, and
+      # go-digest (CC-BY-SA-4.0 on its docs, beside Apache-2.0), which buf brings
+      # into contracts' tools; the
       # action can only exempt a package from the licence check by its exact name,
       # so those are listed one by one and the notices stay off the global list.
       # The vulnerability check still covers them.
@@ -135,7 +137,8 @@ jobs:
             pkg:golang/golang.org/x/sync, pkg:golang/golang.org/x/sys,
             pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
             pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
-            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth
+            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth,
+            pkg:golang/github.com/opencontainers/go-digest
           show-openssf-scorecard: true
           comment-summary-in-pr: never
 

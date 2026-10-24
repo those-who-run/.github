@@ -31,7 +31,8 @@ on:
       coverage-floor:
         description: >-
           The lowest total statement coverage the tests may reach, in per cent. A
-          package without tests counts as uncovered.
+          package without tests counts as uncovered; a generated file (Go's
+          `// Code generated … DO NOT EDIT.` line) counts neither way.
         type: number
         default: 90
       working-directory:

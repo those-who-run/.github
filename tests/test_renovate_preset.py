@@ -196,8 +196,9 @@ class RenovatePreset(unittest.TestCase):
         self.assertIsNone(p["semanticCommitScope"])
 
     def test_dependency_dashboard(self):
-        # It lists the updates still in their cooldown, which `strict` holds back.
-        self.assertIs(self.preset["dependencyDashboard"], True)
+        # Off: the dashboard is an issue, and Issues are off in the component
+        # repositories, so Renovate couldn't open it there.
+        self.assertIs(self.preset["dependencyDashboard"], False)
 
 
 class OwnConfig(unittest.TestCase):

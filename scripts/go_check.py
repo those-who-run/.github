@@ -10,7 +10,9 @@ Run it from the module's directory (the one with go.mod). The checks:
     vet     go vet ./...
     lint    golangci-lint, the caller's config, the version in tools/go.mod
     test    the race detector, shuffled order; fails on a failing or skipped test,
-            or total coverage below --floor
+            or total coverage below --floor. Generated files, those with Go's
+            `// Code generated … DO NOT EDIT.` line before the package clause,
+            count neither way
     build   go build ./...
     vuln    govulncheck, failing on a vulnerability the code reaches
     all     every check above, reporting each, failing if any fails
@@ -49,6 +51,9 @@ TOOL_MODULES = {
     GOVULNCHECK: "golang.org/x/vuln",
 }
 _TOTAL = re.compile(r"^total:\s+\(statements\)\s+([\d.]+)%\s*$", re.MULTILINE)
+# Go's convention for a generated file (https://go.dev/s/generatedcode): this line,
+# anywhere before the first non-comment, non-blank text.
+_GENERATED = re.compile(r"^// Code generated .* DO NOT EDIT\.$")
 
 
 def _in_actions() -> bool:
@@ -198,7 +203,11 @@ def check_test(args: argparse.Namespace) -> bool:
         assert proc.stdout is not None
         skipped, failed = read_events(proc.stdout)
         passed = proc.wait() == 0
+        generated = drop_generated(profile) if passed else []
         coverage = total_coverage(profile) if passed else None
+
+    if generated:
+        print(f"Coverage leaves out {len(generated)} generated file(s): " + ", ".join(generated))
 
     ok = passed
     if not passed:
@@ -249,6 +258,60 @@ def read_events(lines) -> tuple[list[str], list[str]]:
                 failed.append(name)
     sys.stdout.flush()
     return skipped, failed
+
+
+def is_generated(path: str) -> bool:
+    """Whether the Go file has the generated-code line before its package clause."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if _GENERATED.match(line):
+                    return True
+                stripped = line.strip()
+                if stripped and not stripped.startswith("//"):
+                    # Block comments are rare in a header; the package clause or any
+                    # other text ends the search.
+                    if not stripped.startswith(("/*", "*")):
+                        return False
+    except OSError:
+        return False
+    return False
+
+
+def drop_generated(profile: str) -> list[str]:
+    """Remove generated files' blocks from the cover profile, in place, and return
+    those files, relative to the module. The profile names files by import path,
+    so `go list` maps each package to its directory."""
+    out = subprocess.run(
+        ["go", "list", "-f", "{{.ImportPath}}\t{{.Dir}}", "./..."],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        print(out.stdout + out.stderr, end="")
+        return []
+    dirs = dict(line.split("\t", 1) for line in out.stdout.splitlines() if "\t" in line)
+    root = os.getcwd()
+    cache: dict[str, bool] = {}
+    dropped: list[str] = []
+    kept: list[str] = []
+    with open(profile, encoding="utf-8") as f:
+        lines = f.readlines()
+    for line in lines:
+        name = line.split(":", 1)[0] if not line.startswith("mode:") else ""
+        if name and name not in cache:
+            pkg, _, base = name.rpartition("/")
+            path = os.path.join(dirs[pkg], base) if pkg in dirs else ""
+            cache[name] = bool(path) and is_generated(path)
+            if cache[name]:
+                dropped.append(os.path.relpath(path, root))
+        if name and cache[name]:
+            continue
+        kept.append(line)
+    with open(profile, "w", encoding="utf-8") as f:
+        f.writelines(kept)
+    return sorted(dropped)
 
 
 def total_coverage(profile: str) -> float:
