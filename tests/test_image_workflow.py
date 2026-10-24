@@ -118,6 +118,19 @@ class BuildWorkflow(unittest.TestCase):
         self.assertIn("type=oci", builds[0]["text"])
         self.assertNotIn("push: true", builds[0]["text"])
 
+    def test_version_build_argument_only_from_a_release_tag(self) -> None:
+        # The one build argument is VERSION, from the version the inputs step took
+        # from a vX.Y.Z tag, and none off a tag, so the Dockerfile's default holds.
+        builds = [s for s in steps(self.jobs["build"]) if "build-push-action" in s["uses"]]
+        self.assertIn(
+            "build-args: ${{ steps.inputs.outputs.version != '' && "
+            "format('VERSION={0}', steps.inputs.outputs.version) || '' }}",
+            builds[0]["text"],
+        )
+        inputs = [s for s in steps(self.jobs["build"]) if s["name"] == "Check the inputs"][0]
+        self.assertIn('version=""', inputs["run"])
+        self.assertIn('echo "version=$version"', inputs["run"])
+
 
 class PublishWorkflow(unittest.TestCase):
     def setUp(self) -> None:
