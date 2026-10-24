@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/those-who-run/.github/compare/v0.2.1...v0.2.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* allow wcwidth's licence, and lift the cooldown for chassis's releases ([#21](https://github.com/those-who-run/.github/issues/21)) ([f2c54f3](https://github.com/those-who-run/.github/commit/f2c54f3fba509df7a0a186e45d36e97826f4a0d4))
+
 ## [0.2.1](https://github.com/those-who-run/.github/compare/v0.2.0...v0.2.1) (2026-10-24)
 
 
