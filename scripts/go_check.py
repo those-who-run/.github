@@ -51,8 +51,8 @@ TOOL_MODULES = {
     GOVULNCHECK: "golang.org/x/vuln",
 }
 _TOTAL = re.compile(r"^total:\s+\(statements\)\s+([\d.]+)%\s*$", re.MULTILINE)
-# Go's convention for a generated file (https://go.dev/s/generatedcode): this line,
-# anywhere before the first non-comment, non-blank text.
+# Go's convention for a generated file (https://go.dev/s/generatedcode): this line
+# comment, before the package clause.
 _GENERATED = re.compile(r"^// Code generated .* DO NOT EDIT\.$")
 
 
@@ -204,7 +204,8 @@ def check_test(args: argparse.Namespace) -> bool:
         skipped, failed = read_events(proc.stdout)
         passed = proc.wait() == 0
         generated = drop_generated(profile) if passed else []
-        coverage = total_coverage(profile) if passed else None
+        measured = statements(profile) if passed else 0
+        coverage = total_coverage(profile) if measured else None
 
     if generated:
         print(f"Coverage leaves out {len(generated)} generated file(s): " + ", ".join(generated))
@@ -212,9 +213,16 @@ def check_test(args: argparse.Namespace) -> bool:
     ok = passed
     if not passed:
         error("go test failed" + (": " + ", ".join(failed) if failed else ""))
+    if generated is None:
+        error("go list failed, so generated files can't be left out of coverage")
+        ok = False
     for name in skipped:
         error(f"test skipped: {name}. A skipped test fails, as in v1: fix it or remove it")
         ok = False
+    if passed and not measured:
+        line = "Coverage: no statements are left once generated files are left out, so the floor doesn't apply."
+        print(line)
+        summary(line)
     if coverage is not None:
         line = f"Coverage: {coverage:.1f}% of statements (the floor is {args.floor:g}%)."
         print(line)
@@ -261,28 +269,41 @@ def read_events(lines) -> tuple[list[str], list[str]]:
 
 
 def is_generated(path: str) -> bool:
-    """Whether the Go file has the generated-code line before its package clause."""
+    """Whether the Go file has the generated-code line before its package clause.
+
+    As go/ast's IsGenerated: only comments come before the package clause, line or
+    block, and any other text there (the clause itself, even after a block comment
+    on its line) ends the search."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            in_block = False
             for line in f:
-                line = line.rstrip("\r\n")
-                if _GENERATED.match(line):
-                    return True
-                stripped = line.strip()
-                if stripped and not stripped.startswith("//"):
-                    # Block comments are rare in a header; the package clause or any
-                    # other text ends the search.
-                    if not stripped.startswith(("/*", "*")):
+                rest = line.rstrip("\r\n")
+                while True:
+                    if in_block:
+                        end = rest.find("*/")
+                        if end < 0:
+                            break
+                        rest, in_block = rest[end + 2 :], False
+                    rest = rest.lstrip()
+                    if not rest:
+                        break
+                    if rest.startswith("//"):
+                        if _GENERATED.match(rest):
+                            return True
+                        break
+                    if not rest.startswith("/*"):
                         return False
+                    rest, in_block = rest[2:], True
     except OSError:
         return False
     return False
 
 
-def drop_generated(profile: str) -> list[str]:
+def drop_generated(profile: str) -> list[str] | None:
     """Remove generated files' blocks from the cover profile, in place, and return
-    those files, relative to the module. The profile names files by import path,
-    so `go list` maps each package to its directory."""
+    those files, relative to the module; None when `go list` fails. The profile
+    names files by import path, so `go list` maps each package to its directory."""
     out = subprocess.run(
         ["go", "list", "-f", "{{.ImportPath}}\t{{.Dir}}", "./..."],
         capture_output=True,
@@ -290,7 +311,7 @@ def drop_generated(profile: str) -> list[str]:
     )
     if out.returncode != 0:
         print(out.stdout + out.stderr, end="")
-        return []
+        return None
     dirs = dict(line.split("\t", 1) for line in out.stdout.splitlines() if "\t" in line)
     root = os.getcwd()
     cache: dict[str, bool] = {}
@@ -312,6 +333,14 @@ def drop_generated(profile: str) -> list[str]:
     with open(profile, "w", encoding="utf-8") as f:
         f.writelines(kept)
     return sorted(dropped)
+
+
+def statements(profile: str) -> int:
+    """How many statements the cover profile's blocks hold."""
+    with open(profile, encoding="utf-8") as f:
+        return sum(
+            int(line.split()[-2]) for line in f if line.strip() and not line.startswith("mode:")
+        )
 
 
 def total_coverage(profile: str) -> float:

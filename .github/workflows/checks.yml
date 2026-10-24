@@ -132,13 +132,13 @@ jobs:
             pkg:golang/github.com/alfatraining/structtag,
             pkg:golang/github.com/alecthomas/chroma,
             pkg:golang/github.com/alecthomas/chroma/v2,
+            pkg:golang/github.com/opencontainers/go-digest,
             pkg:golang/golang.org/x/crypto, pkg:golang/golang.org/x/exp,
             pkg:golang/golang.org/x/mod, pkg:golang/golang.org/x/net,
             pkg:golang/golang.org/x/sync, pkg:golang/golang.org/x/sys,
             pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
             pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
-            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth,
-            pkg:golang/github.com/opencontainers/go-digest
+            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth
           show-openssf-scorecard: true
           comment-summary-in-pr: never
 
