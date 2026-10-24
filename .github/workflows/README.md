@@ -564,7 +564,11 @@ tags).
 Each image carries `org.opencontainers.image.source` (as a label on the image and
 an annotation on its index) pointing at the calling repository, so its package on
 GitHub links to that repository, plus `org.opencontainers.image.revision` and, when
-built on a tag, `org.opencontainers.image.version`. There is no `latest` tag: a
+built on a tag, `org.opencontainers.image.version`. Built on a tag, the image also
+gets the version as the build argument `VERSION` (`1.2.3` for `v1.2.3`), so a
+Dockerfile that declares `ARG VERSION=dev` can build it into the binary, for
+example with `go build -ldflags "-X main.version=${VERSION}"`. A pull request's
+build passes no `VERSION`, and the Dockerfile's default applies. There is no `latest` tag: a
 deployment pins the version it runs. A new package is private until the maintainer
 makes it public, once, after its first push.
 

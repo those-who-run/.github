@@ -92,7 +92,8 @@ jobs:
           fi
           os=${BASH_REMATCH[1]} arch=${BASH_REMATCH[2]} variant=${BASH_REMATCH[4]}
           # On a release tag the image gets its version now, so the image published
-          # from this build carries it; a PR build has none.
+          # from this build carries it, in its labels and as the VERSION build
+          # argument; a PR build has none.
           version=""
           if [ "$REF_TYPE" = tag ] && [ "$REF" = "refs/tags/$REF_NAME" ] \
             && [[ $REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
@@ -101,6 +102,7 @@ jobs:
           {
             echo "name=ghcr.io/${OWNER,,}/$image"
             echo "tag=${version:-build}"
+            echo "version=$version"
             echo "artifact=oci-image-$image"
             echo "os=$os"
             echo "arch=$arch"
@@ -126,7 +128,10 @@ jobs:
       # the calling repository on GitHub (the label on the image, the annotation on
       # the index the attestations make). The Actions cache speeds up PR builds; a
       # build on a tag, which a release publishes, reads none, so nothing another
-      # run wrote reaches a published image.
+      # run wrote reaches a published image. On a release tag the build gets
+      # VERSION=X.Y.Z (the tag without its v) as a build argument, for a Dockerfile
+      # that declares `ARG VERSION` to build into its binary; off a tag it gets
+      # none, and the Dockerfile's own default applies.
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -139,6 +144,7 @@ jobs:
           tags: ${{ steps.inputs.outputs.name }}:${{ steps.inputs.outputs.tag }}
           labels: ${{ steps.inputs.outputs.labels }}
           annotations: ${{ steps.inputs.outputs.annotations }}
+          build-args: ${{ steps.inputs.outputs.version != '' && format('VERSION={0}', steps.inputs.outputs.version) || '' }}
           cache-from: ${{ github.ref_type != 'tag' && 'type=gha' || '' }}
           cache-to: ${{ github.ref_type != 'tag' && 'type=gha,mode=max' || '' }}
       # Recorded before the caller's command runs, as this step's output, which no
