@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/those-who-run/.github/compare/v0.2.3...v0.2.4) (2026-10-24)
+
+
+### Features
+
+* **go:** leave generated files out of coverage; no Dependency Dashboard; allow go-digest ([#27](https://github.com/those-who-run/.github/issues/27)) ([2fcb865](https://github.com/those-who-run/.github/commit/2fcb865113a8900fd214c3824748f55dff2234aa))
+
 ## [0.2.3](https://github.com/those-who-run/.github/compare/v0.2.2...v0.2.3) (2026-10-24)
 
 
