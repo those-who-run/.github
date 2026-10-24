@@ -120,18 +120,19 @@ written, so each change applies here first, before any repository takes it.
 What the preset decides (those-who-run/paddock#22):
 
 - One PR per repository per week, on Monday before 06:00 UTC, with every update in
-  it (majors included), titled `deps: update all dependencies`. The Dependency
-  Dashboard issue lists what is waiting.
+  it (majors included), titled `deps: update all dependencies`. There is no
+  Dependency Dashboard: it is an issue, and Issues are off in the component
+  repositories. What is waiting shows in Renovate's log for the repository on the
+  Mend app.
 - A version update is offered once the release is 7 days old (14 for the commit
   hooks, which run on the maintainer's machine), so a release pulled for being
   malicious within that time doesn't reach the weekly PR. A newer release still in
-  its cooldown waits on the dashboard. The cooldown applies to version and digest
+  its cooldown waits, and is offered when it comes of age. The cooldown applies to version and digest
   updates; Renovate doesn't apply it to pins, replacements, rollbacks or lock-file
   maintenance.
 - A release without a timestamp can't be aged. GHCR and the other registries than
   Docker Hub publish none, and under `minimumReleaseAgeBehaviour:
-  timestamp-required` their updates are held, listed under "Pending Status Checks"
-  on the dashboard, until a rule exempts them. The organisation's own images
+  timestamp-required` their updates are held until a rule exempts them. The organisation's own images
   (`ghcr.io/those-who-run/**`), this repository's releases (the reusable
   workflows and the preset's pin) and `chassis`'s releases (the template, through
   the copier manager, whose git-tags lookup has no timestamps) are exempt from the
