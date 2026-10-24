@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/those-who-run/.github/compare/v0.2.0...v0.2.1) (2026-10-24)
+
+
+### Features
+
+* brand assets in assets/, with the banner on the org profile ([#15](https://github.com/those-who-run/.github/issues/15)) ([e0011c5](https://github.com/those-who-run/.github/commit/e0011c5e675cee1f746a23099e1a9ebe21e58219))
+* **renovate:** the shared Renovate preset every v2 repository extends ([#16](https://github.com/those-who-run/.github/issues/16)) ([56c9f62](https://github.com/those-who-run/.github/commit/56c9f62a23feff0251e6e11569cdc57dc74dd14e))
+
 ## [0.2.0](https://github.com/those-who-run/.github/compare/v0.1.1...v0.2.0) (2026-10-23)
 
 
