@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.8](https://github.com/those-who-run/.github/compare/v0.2.7...v0.2.8) (2026-10-26)
+
+
+### Bug Fixes
+
+* **checks:** allow golang.org/x/xerrors by name ([#39](https://github.com/those-who-run/.github/issues/39)) ([00e00a5](https://github.com/those-who-run/.github/commit/00e00a5ea0650591e8fd12f65f0cd65ae2d1579e))
+* **scripts:** guard noexec, shared key text and release environment checks ([#38](https://github.com/those-who-run/.github/issues/38)) ([f837194](https://github.com/those-who-run/.github/commit/f8371945372c05473f99da5b02744662842e8cb1))
+
 ## [0.2.7](https://github.com/those-who-run/.github/compare/v0.2.6...v0.2.7) (2026-10-26)
 
 
