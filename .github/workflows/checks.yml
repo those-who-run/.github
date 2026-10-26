@@ -140,7 +140,8 @@ jobs:
             pkg:golang/golang.org/x/sync, pkg:golang/golang.org/x/sys,
             pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
             pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
-            pkg:golang/golang.org/x/vuln, pkg:pypi/wcwidth
+            pkg:golang/golang.org/x/vuln, pkg:golang/golang.org/x/xerrors,
+            pkg:pypi/wcwidth
           show-openssf-scorecard: true
           comment-summary-in-pr: never
 
