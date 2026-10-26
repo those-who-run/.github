@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/those-who-run/.github/compare/v0.2.4...v0.2.5) (2026-10-26)
+
+
+### Bug Fixes
+
+* **go:** follow go/ast's rule for the generated-file header; no floor without statements ([#29](https://github.com/those-who-run/.github/issues/29)) ([cbe524f](https://github.com/those-who-run/.github/commit/cbe524fb4908e1be05fb7c797eb54852b1adb6a5))
+
 ## [0.2.4](https://github.com/those-who-run/.github/compare/v0.2.3...v0.2.4) (2026-10-24)
 
 
