@@ -7,7 +7,7 @@
 # `make brand-assets` and commit what changes. To regenerate after changing a pin
 # by hand:
 #   printf 'fonttools==X.Y.Z\nbrotli==X.Y.Z\n' | uv pip compile - --generate-hashes \
-#     --universal --python-version 3.13 --no-header -o .github/requirements-brand.txt
+#     --universal --python-version 3.15 --no-header -o .github/requirements-brand.txt
 # and put this comment back.
 brotli==1.2.1 \
     --hash=sha256:0023348c448140a6ea71615eba331835c971d38ae8acf8a89b4e963b1f38f131 \
