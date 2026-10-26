@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.6](https://github.com/those-who-run/.github/compare/v0.2.5...v0.2.6) (2026-10-26)
+
+
+### Features
+
+* **scripts:** maintainer make targets: board sync, protection, release environments, new-repo check ([#33](https://github.com/those-who-run/.github/issues/33)) ([e51f806](https://github.com/those-who-run/.github/commit/e51f8069d232e223dcc6bb9b1067fa717d6a6cac))
+
+
+### Bug Fixes
+
+* **checks:** allow github.com/opencontainers/image-spec by name ([#32](https://github.com/those-who-run/.github/issues/32)) ([d439c44](https://github.com/those-who-run/.github/commit/d439c4472369eccc88fcabd95521fb58e3a619c9))
+
 ## [0.2.5](https://github.com/those-who-run/.github/compare/v0.2.4...v0.2.5) (2026-10-26)
 
 
