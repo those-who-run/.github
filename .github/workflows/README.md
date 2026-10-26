@@ -390,7 +390,8 @@ Once, for the organisation:
 1. Create the GitHub App `twr-release` in the organisation:
    - webhook off;
    - repository permissions: Contents read and write, Pull requests read and write,
-     Issues read and write (labels), Metadata read;
+     Issues read and write (labels), Workflows read and write (for
+     [the fan-out](#the-fan-out), which changes `.github/workflows/`), Metadata read;
    - installable only on this account.
 2. Note the App ID (a number) and the Client ID (it starts `Iv23`).
 3. Put the numeric App ID in `release_app_id` in
@@ -447,6 +448,72 @@ open PRs with the `GITHUB_TOKEN`, and isn't needed for release-please.
 The release PR is merged by a person, never by a workflow or auto-merge: a merge by
 the `GITHUB_TOKEN` would not start the release run (v1's 0.7.6), and `auto-merge-off`
 keeps auto-merge off.
+
+## The fan-out
+
+This repository's own release PR workflow, `release-pr.yml`, has a second job,
+`fan-out`, which isn't part of the reusable `release-please.yml`. When its
+`release` job has released (`release_created` is `true`, with the new `tag_name`),
+on `main`, it opens one PR in every other repository in
+[`scripts/repos.json`](../../scripts/repos.json) that moves the repository onto the
+release, with [`scripts/fan_out.py`](../../scripts/fan_out.py):
+
+- the pins of this repository's workflows in `.github/workflows/`: a pin at a commit
+  SHA moves to the release's commit, with the tag in its comment; a pin at a bare
+  tag moves to the new tag. Each keeps the form it had;
+- the preset's pin in `renovate.json`, `github>those-who-run/.github#vX.Y.Z`;
+- the guard copy: `.claude/hooks/guard.py` and `.claude/settings.json` become
+  `agent/guard.py` and `agent/settings.json` at the tag, byte for byte, where the
+  repository has them (each repository's guard-copy check compares both against the
+  commit its CI pins);
+- in `chassis`, the template, the same in its template files: the `.jinja`
+  siblings, and the same paths under copier's `_subdirectory` if it sets one.
+
+The PR's branch is `chore/github-vX.Y.Z`, its title `ci: those-who-run/.github
+vX.Y.Z`, and its body links the release notes. Renovate leaves these updates to it:
+the preset turns them off (`default.json`), so each arrives once.
+
+It is safe to run again. A repository already on the release, or on a later one,
+gets no PR. Where a PR from the branch is open, it is left as it is (the summary
+says whether it matches what the run would write); a branch an earlier run left
+without a PR is replaced. One repository failing doesn't stop the others: the job's
+summary has a row for each repository, and the job fails at the end if any failed.
+Once the cause is fixed, re-run the failed job: the repositories that already have
+their PR are left alone.
+
+The job runs in this repository's `release-please` environment (deployments from
+`main` only) and mints a token of the release App, `twr-release`, with
+`actions/create-github-app-token`, from the same `RELEASE_APP_CLIENT_ID` variable
+and `RELEASE_APP_PRIVATE_KEY` secret as release-please. A PR opened with the App's
+token starts the repository's CI through `pull_request`; one opened with the
+`GITHUB_TOKEN` would start none (v1's #394). The token is:
+
+- scoped to the repositories in the list other than this one (`repositories`, from
+  `scripts/fan_out.py --names`). The App must be installed on each of them: a
+  repository it isn't installed on fails the token, and so the whole job, before any
+  PR is opened;
+- narrowed to Contents, Pull requests and Workflows, each `write`: the branch, the
+  PR, and the changes under `.github/workflows/`, which GitHub refuses without
+  Workflows;
+- a step output, given only to the script's step as `GH_TOKEN`, and revoked when the
+  job ends. git reaches GitHub through `gh auth git-credential`, so the token is
+  never in a URL or a clone's config.
+
+So the App needs, besides its release-please permissions, **Workflows read and
+write**, and it must be installed on every repository in `scripts/repos.json`. The
+maintainer sets both on the App's settings page. The commits are the App's bot
+(`twr-release[bot]`, with its noreply address). Nothing merges, approves or arms
+auto-merge on the PRs: the maintainer reviews and merges each one.
+
+To see what a release would change, without pushing or opening anything:
+
+```sh
+python3 scripts/fan_out.py --tag vX.Y.Z --dry-run [--repo those-who-run/<name>]
+```
+
+It reads the release's `agent/` files from this checkout at the tag, and prints
+each repository's diff. `tests/test_fan_out.py` runs the script against a stub `gh`
+and local git repositories, and checks the job.
 
 ## image.yml and image-publish.yml
 

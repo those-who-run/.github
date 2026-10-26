@@ -3,7 +3,8 @@
   "description": [
     "The shared Renovate preset for every Those Who Run v2 repository, which extends it pinned to a release: \"extends\": [\"github>those-who-run/.github#vX.Y.Z\"].",
     "Every update waits in one PR per repository per week, which the maintainer reviews and merges by hand; security fixes open at Renovate's next run, in a PR of their own.",
-    "The cooldown holds a version update until the release is 7 days old. A release without a timestamp (GHCR and other registries than Docker Hub publish none) is held until a rule exempts it, as the organisation's own images, workflows and template are below.",
+    "The cooldown holds a version update until the release is 7 days old. A release without a timestamp (GHCR and other registries than Docker Hub publish none) is held until a rule exempts it, as the organisation's own images and template are below.",
+    "This repository's own releases (the workflow pins and this preset's pin) are not Renovate's: its release fan-out opens a PR for each.",
     "No Dependency Dashboard: it is an issue, and Issues are off in the component repositories. What is held waits in Renovate's log on the Mend app.",
     "tests/test_renovate_preset.py checks the decided values below."
   ],
@@ -51,10 +52,10 @@
       "minimumReleaseAgeBehaviour": "timestamp-optional"
     },
     {
-      "description": "This repository's own releases: the reusable workflows every repository calls, and this preset's pin. Same principle as the images: the organisation wrote and reviewed them.",
+      "description": "This repository's own releases: the reusable workflows every repository calls, and this preset's pin. Off: when this repository releases, its fan-out (scripts/fan_out.py, from release-pr.yml) opens a PR in every repository that moves the pins, the preset and the guard copy together, so the update arrives once.",
       "matchDatasources": ["github-tags"],
       "matchPackageNames": ["those-who-run/.github"],
-      "minimumReleaseAge": null
+      "enabled": false
     },
     {
       "description": "chassis's releases, which a repository made from the template takes through the copier manager. Its git-tags lookup has no release timestamps, so under the cooldown they would wait for ever. The URL is the one `copier copy` was given, with or without .git.",

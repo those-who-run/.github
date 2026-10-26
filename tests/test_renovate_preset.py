@@ -29,18 +29,15 @@ OWN_CONFIG = ROOT / "renovate.json"
 MIN_COOLDOWN_DAYS = 7
 
 # The only rules allowed to lift the cooldown: the organisation's own releases
-# (those-who-run/paddock#22). Each is matched whole, so widening one fails.
+# (those-who-run/paddock#22). Each is matched whole, so widening one fails. This
+# repository's own releases aren't here: Renovate doesn't update them at all
+# (FAN_OUT_RULE).
 EXEMPTIONS = [
     {
         "matchDatasources": ["docker"],
         "matchPackageNames": ["ghcr.io/those-who-run/**"],
         "minimumReleaseAge": None,
         "minimumReleaseAgeBehaviour": "timestamp-optional",
-    },
-    {
-        "matchDatasources": ["github-tags"],
-        "matchPackageNames": ["those-who-run/.github"],
-        "minimumReleaseAge": None,
     },
     {
         "matchManagers": ["copier"],
@@ -52,6 +49,14 @@ EXEMPTIONS = [
         "minimumReleaseAge": None,
     },
 ]
+# This repository's releases, the workflow pins and the preset's pin alike: off in
+# Renovate, as the release fan-out (scripts/fan_out.py) opens a PR for each, and an
+# update from both would arrive twice. Matched whole, so a narrower rule fails.
+FAN_OUT_RULE = {
+    "matchDatasources": ["github-tags"],
+    "matchPackageNames": ["those-who-run/.github"],
+    "enabled": False,
+}
 COOLDOWN_KEYS = ("minimumReleaseAge", "minimumReleaseAgeBehaviour", "internalChecksFilter")
 DURATION = re.compile(r"^(\d+) (day|days|week|weeks)$")
 
@@ -188,6 +193,18 @@ class RenovatePreset(unittest.TestCase):
             if isinstance(value, dict) and value.get("enabled") is False:
                 with self.subTest(path=f"{path}.{key}"):
                     self.assertEqual(key, "lockFileMaintenance")
+        # The one rule that turns updates off, for this repository's own releases.
+        off = [
+            {k: v for k, v in rule.items() if k != "description"}
+            for rule in p.get("packageRules", [])
+            if rule.get("enabled") is False
+        ]
+        self.assertEqual(off, [FAN_OUT_RULE])
+
+    def test_this_repositorys_releases_are_left_to_the_fan_out(self):
+        rules = [r for r in self.preset["packageRules"] if "those-who-run/.github" in r.get("matchPackageNames", [])]
+        self.assertEqual([{k: v for k, v in r.items() if k != "description"} for r in rules], [FAN_OUT_RULE])
+        self.assertIn("fan-out", rules[0]["description"])
 
     def test_commits_are_deps(self):
         p = self.preset

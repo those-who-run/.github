@@ -356,7 +356,9 @@ class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
         self.assertEqual(passed, [("RELEASE_APP_PRIVATE_KEY", "${{ secrets.RELEASE_APP_PRIVATE_KEY }}")])
         self.assertNotRegex(caller, r"(?m)^\s+secrets: inherit")
         self.assertNotIn("ci-workflow", caller)
-        self.assertNotIn("contents: write", caller)
+        # No job's GITHUB_TOKEN may write contents. The fan-out's App token asks for
+        # it as `permission-contents: write`, which this doesn't match.
+        self.assertNotRegex(caller, r"(?m)^\s+contents: write")
 
     def test_the_token_in_another_job_is_caught(self):
         text = WORKFLOW.read_text()

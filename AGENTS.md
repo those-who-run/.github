@@ -112,8 +112,9 @@ this repository:
 ```
 
 A change to the preset reaches a repository only through the PR that bumps that
-pin, which Renovate opens itself (its `renovate-config` manager updates a preset
-reference that names a tag) in the repository's weekly PR. This repository's own
+pin. Renovate doesn't open it: when this repository releases, its fan-out opens one
+PR in each repository that moves the pin with the workflow pins and the guard copy
+(see "Releases" below). This repository's own
 `renovate.json` extends the preset unpinned, from `main`: it is where the preset is
 written, so each change applies here first, before any repository takes it.
 
@@ -133,10 +134,12 @@ What the preset decides (those-who-run/paddock#22):
 - A release without a timestamp can't be aged. GHCR and the other registries than
   Docker Hub publish none, and under `minimumReleaseAgeBehaviour:
   timestamp-required` their updates are held until a rule exempts them. The organisation's own images
-  (`ghcr.io/those-who-run/**`), this repository's releases (the reusable
-  workflows and the preset's pin) and `chassis`'s releases (the template, through
+  (`ghcr.io/those-who-run/**`) and `chassis`'s releases (the template, through
   the copier manager, whose git-tags lookup has no timestamps) are exempt from the
   cooldown, not from the weekly schedule.
+- This repository's releases (the reusable workflows' pins and the preset's pin)
+  are off in Renovate (`"enabled": false`): the release fan-out moves them, so each
+  update arrives once.
 - Security fixes for Dependabot alerts open at Renovate's next run on the
   repository, one PR per dependency, outside the schedule and the cooldown. The
   app needs read access to Dependabot alerts for this.
@@ -148,7 +151,8 @@ What the preset decides (those-who-run/paddock#22):
 Dependabot alerts stay on in every v2 repository, and Renovate reads them to open
 its fixes. Dependabot security updates are turned off in each repository's settings
 (the maintainer changes them), and no v2 repository has a `dependabot.yml`, so each
-fix and each update arrives once, from Renovate. A repository overrides the preset
+fix and each update arrives once, from Renovate (or, for this repository's
+releases, from the fan-out). A repository overrides the preset
 in its own `renovate.json` only for a reason it gives there in a `description`.
 
 `renovate-config-validator` checks the preset and this repository's `renovate.json`
@@ -218,3 +222,21 @@ tag's commit SHA:
 ```yaml
 uses: those-who-run/.github/.github/workflows/<name>.yml@<sha> # vX.Y.Z
 ```
+
+**The fan-out.** When a release is made, the `fan-out` job of `release-pr.yml` runs
+`scripts/fan_out.py`, which opens one PR in every other repository in
+`scripts/repos.json` moving it onto the release: the pins of this repository's
+workflows (to the tag's commit SHA with the tag in the comment, or to the bare tag,
+whichever form the repository uses), the preset's pin in `renovate.json`, and the
+guard copy in `.claude/` (`agent/guard.py` and `agent/settings.json` at the tag),
+in chassis's template files too. The branch is `chore/github-vX.Y.Z` and the title
+`ci: those-who-run/.github vX.Y.Z`. It runs as the release App, so each PR starts
+the repository's CI, and a re-run opens no second PR. Nothing merges them: the
+maintainer reviews and merges each one. The job's summary lists each repository's
+result, and the job fails if any repository failed. The App needs the Contents, Pull
+requests and Workflows permissions (read and write) and to be installed on every
+listed repository
+([`.github/workflows/README.md`](.github/workflows/README.md#the-fan-out)).
+`python3 scripts/fan_out.py --tag vX.Y.Z --dry-run` prints each repository's diff
+and changes nothing; `tests/test_fan_out.py` runs it against a stub `gh` and local
+git repositories.
