@@ -854,21 +854,11 @@ MAKE_WITH_VALUE = {
 }  # fmt: skip
 
 
-# make's dry runs print the recipes without running them.
-MAKE_DRY_RUN = {"-n", "--just-print", "--dry-run", "--recon"}
-# make's short options that take a value, which end a cluster such as `-nC`.
-MAKE_SHORT_WITH_VALUE = "CfIoWEjl"
-
-
 def make_dry_run(args: list[str]) -> bool:
-    for a in args:
-        if a == "--":
-            return False
-        if a in MAKE_DRY_RUN:
-            return True
-        if "n" in short_flags(a, MAKE_SHORT_WITH_VALUE) and a[1:].isalpha():
-            return True
-    return False
+    """Only `make -n <target>`, exactly. Options that take a value (`-o -n`, `-C -n`)
+    make any reading of a longer command a guess, so nothing else counts as a dry
+    run; `make --dry-run board` or `make -nk board` is blocked like `make board`."""
+    return len(args) == 2 and args[0] == "-n" and not args[1].startswith("-") and "=" not in args[1]
 
 
 def make_rule(args: list[str], env: dict[str, str]) -> Verdict:
@@ -1396,35 +1386,42 @@ def check_env(
     return ALLOWED
 
 
+def shell_names_maintainer_script(args: list[str]) -> Verdict:
+    """A shell given one of the maintainer's scripts anywhere in its arguments is
+    blocked, unless the whole command is `bash -n <script>` (or `sh -n`), which only
+    reads it. Reading the shell's options instead is a guess: a cluster such as
+    `-eo pipefail` takes the next word as a value, so the script isn't where it seems."""
+    named = [a for a in args if os.path.basename(a) in MAINTAINER_SCRIPTS]
+    if not named or (len(args) == 2 and args[0] == "-n"):
+        return ALLOWED
+    return maintainer_script(named[0])
+
+
 def check_shell(args: list[str], cmd: Command, text: str, depth: int) -> Verdict:
     """`bash -c '...'` checks the script; `bash <<EOF` checks the here-document; a
     shell reading stdin from a pipe can't be followed."""
-    has_c, noexec, i = False, False, 0
+    script = shell_names_maintainer_script(args)
+    has_c, i = False, 0
     while i < len(args):
         a = args[i]
         if a == "--":
             i += 1
             break
-        # noexec follows the last setting: `-n` and `-o noexec` set it, `+n` and
-        # `+o noexec` clear it, so `bash -n +n script` runs the script.
         if a in ("-o", "+o", "-O", "+O"):
-            if a in ("-o", "+o") and args[i + 1 : i + 2] == ["noexec"]:
-                noexec = a == "-o"
             i += 2
             continue
         if a.startswith("-") and not a.startswith("--") and "c" in a[1:]:
             has_c = True
-        if a[:1] in ("-", "+") and a[1:2] != a[:1] and "n" in a[1:]:
-            noexec = a[0] == "-"
         if not a.startswith(("-", "+")):
             break
         i += 1
     if has_c:
-        return check(args[i], depth + 1) if i < len(args) else ALLOWED
-    if i < len(args):
-        # A script file: what it runs is out of sight, but which script it is isn't.
-        # `bash -n` only reads it for its syntax.
-        return ALLOWED if noexec else maintainer_script(args[i])
+        # Which word is the command string depends on the options before it (in
+        # `bash -co pipefail '...'` it is the second), so every word that isn't an
+        # option is checked as one.
+        return worst([script, *(check(a, depth + 1) for a in args if not a.startswith(("-", "+")))])
+    if i < len(args) or script.level:
+        return script  # a script file: what it runs is out of sight, but not its name
     if cmd.stdin_scripts:
         return worst([check(s, depth + 1) for s in cmd.stdin_scripts])
     return ask_if_sensitive(text, "a shell reads commands from a pipe")

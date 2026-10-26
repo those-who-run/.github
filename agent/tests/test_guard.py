@@ -165,6 +165,8 @@ OUTWARD = [
     # git push: forced, mirrored, deleting, tags, the protected branch
     ("git push --force origin feat/x", "git push origin feat/x"),
     ("git push -f origin feat/x", "git push -u origin feat/x"),
+    # `-co pipefail`: the command string is the word after the option's value.
+    ("bash -co pipefail 'git push --force origin feat/x'", "bash -co pipefail 'git push origin feat/x'"),
     ("git push -uf origin feat/x", "git push -o ci.skip origin feat/x"),
     ("git push --force-with-lease origin feat/x", "git push --set-upstream origin feat/x"),
     ("git push --mirror origin", "git push --dry-run origin feat/x"),
@@ -455,20 +457,39 @@ MAINTAINER_ONLY = [
     ("source scripts/board-sync.sh", "source scripts/env.sh"),
     (". scripts/protect-repo.sh", ". scripts/env.sh"),
     ("/usr/bin/env bash scripts/protect-repo.sh --all", "python3 -m unittest discover tests"),
-    # Dry runs pass: `bash -n` reads a script for its syntax, `make -n` prints the recipes.
+    # Only two exact dry runs pass: `bash -n <script>` (or `sh -n`) and `make -n
+    # <target>`. Anything longer is blocked, whatever its options say.
     ("bash scripts/board-sync.sh --dry-run", "bash -n scripts/board-sync.sh"),
     ("bash -x scripts/protect-repo.sh", "sh -n scripts/protect-repo.sh"),
-    ("bash -e scripts/release-envs.sh", "bash -o noexec scripts/release-envs.sh"),
+    ("bash -e scripts/release-envs.sh", "bash -n scripts/release-envs.sh"),
     ("make board", "make -n board"),
-    ("make -s protect", "make --dry-run protect"),
-    ("make -C .github envs", "make -C .github --just-print envs"),
-    ("make -k envs-check", "make -nk envs-check"),
-    ("make -- -n board", "make --recon board"),
-    # The last setting counts: `+n` and `+o noexec` turn the dry run off again.
-    ("bash -n +n scripts/release-envs.sh", "bash +n -n scripts/release-envs.sh"),
-    ("sh -n +n scripts/board-sync.sh", "sh -x -n scripts/board-sync.sh"),
-    ("bash -n +o noexec scripts/protect-repo.sh", "bash +o noexec -n scripts/protect-repo.sh"),
-    ("bash -o noexec +o noexec scripts/new-repo-check.sh", "bash +n -o noexec scripts/new-repo-check.sh"),
+    ("make -s protect", "make -n protect"),
+    ("make -C .github envs", "make -n envs"),
+    ("make -k envs-check", "make -n envs-check"),
+    ("make -- -n board", "make -n board-check"),
+    ("make --dry-run protect", "make -n protect-check"),
+    ("make -C .github --just-print envs", "make -n new-repo-check"),
+    ("make -nk envs-check", "make -n help"),
+    ("make --recon board", "make -nk check"),
+    # Options that take a value hide where the script or the dry run really is.
+    ("make -o -n board", "make -o board check"),
+    ("make -C -n protect", "make -C web check"),
+    ("bash -n +n scripts/release-envs.sh", "bash -n scripts/other.sh"),
+    ("sh -n +n scripts/board-sync.sh", "sh -n scripts/board-sync.sh"),
+    ("bash -n +o noexec scripts/protect-repo.sh", "bash -eo pipefail scripts/other.sh"),
+    ("bash -o noexec +o noexec scripts/new-repo-check.sh", "bash -n scripts/new-repo-check.sh"),
+    ("bash +n -n scripts/release-envs.sh", "cat scripts/release-envs.sh"),
+    ("bash +o noexec -n scripts/protect-repo.sh", "shellcheck scripts/protect-repo.sh"),
+    ("bash -o noexec scripts/release-envs.sh", "git diff scripts/release-envs.sh"),
+    ("bash -nx scripts/board-sync.sh", "sh -n scripts/release-envs.sh"),
+    ("bash -eo pipefail scripts/board-sync.sh", "bash -eo pipefail -c 'make help'"),
+    ("bash -n +no noexec scripts/board-sync.sh", "bash -n scripts/protect-repo.sh"),
+    ("bash -n +xo noexec scripts/board-sync.sh", "bash -n scripts/board-sync.sh"),
+    ("bash -xo noexec +o noexec scripts/board-sync.sh", "bash -xo pipefail -c 'ls'"),
+    ("env bash -eo pipefail scripts/board-sync.sh", "env bash -n scripts/board-sync.sh"),
+    ("bash -co pipefail 'make board'", "bash -co pipefail 'make help'"),
+    ("dash -n -- scripts/board-sync.sh", "dash -n scripts/board-sync.sh"),
+    ("zsh -n scripts/release-envs.sh x", "zsh -n scripts/release-envs.sh"),
 ]
 
 

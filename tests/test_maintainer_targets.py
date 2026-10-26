@@ -646,7 +646,7 @@ class ReleaseEnvs(Targets):
         self.assert_no_values(rotated)
 
     def test_a_listed_repository_that_cannot_be_read_stops_the_run(self):
-        # A 404 for the repository itself is renamed, deleted or out of reach, never
+        # A 404 for the repository itself is deleted or not visible to this login, never
         # "doesn't release".
         self.state["gone"] = [f"{ORG}/radio"]
         for target in (["envs-check"], ["envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}"]):

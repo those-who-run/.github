@@ -16,7 +16,8 @@
 # calls it has one, and one without it can't release. Naming repositories limits the
 # run to them, and takes them whether or not they are in the list or have the file
 # yet (a new repository). Each listed repository is read first, and any failure there
-# (a 404 included: renamed, deleted or out of reach) stops the run with exit 2. Then
+# (a 404 included: deleted, or not visible to this login; GitHub redirects a renamed
+# repository) stops the run with exit 2. Then
 # only a 404 for the file means "doesn't release": any other failed read stops the run
 # with exit 2, and so does a list in which nothing releases.
 #
@@ -105,10 +106,10 @@ fi
 # login, a rate limit, the network) stops the run: taking it for "doesn't release"
 # would skip the repository and report success having looked at nothing.
 for r in ${candidates[@]+"${candidates[@]}"}; do
-  # The repository itself first: a 404 here is a renamed or deleted repository, or one
-  # this login can't see, never one that doesn't release.
+  # The repository itself first: a 404 here is a deleted repository, or one this login
+  # can't see (GitHub redirects a renamed one), never one that doesn't release.
   if ! err=$(gh api "repos/$r" 2>&1 >/dev/null); then
-    fail "$r: can't read the repository (${err//$'\n'/ }): renamed, deleted or out of this login's reach? Fix scripts/repos.json or the gh login (gh auth status)"
+    fail "$r: can't read the repository (${err//$'\n'/ }): deleted, or not visible to this login? Fix scripts/repos.json or the gh login (gh auth status)"
   fi
   if err=$(gh api "repos/$r/contents/release-please-config.json" 2>&1 >/dev/null); then
     repos+=("$r")
