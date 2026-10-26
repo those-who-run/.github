@@ -265,6 +265,9 @@ class TheDigestFailsClosed(unittest.TestCase):
 
 
 CALLER = ROOT / ".github" / "workflows" / "release-pr.yml"
+# A `contents: write` permission, block or flow style, but not the App token's
+# `permission-contents: write` input.
+CONTENTS_WRITE = re.compile(r"(?<![-\w])contents:\s*write")
 APP_ACTION = re.compile(
     r"^        uses: actions/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+$", re.M
 )
@@ -356,9 +359,19 @@ class TheAppTokenStaysInTheReleasePleaseJob(unittest.TestCase):
         self.assertEqual(passed, [("RELEASE_APP_PRIVATE_KEY", "${{ secrets.RELEASE_APP_PRIVATE_KEY }}")])
         self.assertNotRegex(caller, r"(?m)^\s+secrets: inherit")
         self.assertNotIn("ci-workflow", caller)
-        # No job's GITHUB_TOKEN may write contents. The fan-out's App token asks for
-        # it as `permission-contents: write`, which this doesn't match.
-        self.assertNotRegex(caller, r"(?m)^\s+contents: write")
+        # No job's GITHUB_TOKEN may write contents, in block or flow style. The
+        # fan-out's App token asks for it as `permission-contents: write`, which
+        # this doesn't match.
+        self.assertNotRegex(caller, CONTENTS_WRITE)
+
+    def test_contents_write_is_caught_in_either_style(self):
+        for text in ("    permissions:\n      contents: write\n", "    permissions: { contents: write }\n",
+                     "    permissions: {contents:write, actions: read}\n"):
+            with self.subTest(text):
+                self.assertRegex(text, CONTENTS_WRITE)
+        for text in ("          permission-contents: write # the PR's branch\n", "      contents: read\n"):
+            with self.subTest(text):
+                self.assertNotRegex(text, CONTENTS_WRITE)
 
     def test_the_token_in_another_job_is_caught(self):
         text = WORKFLOW.read_text()

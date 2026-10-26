@@ -459,8 +459,10 @@ on `main`, it opens one PR in every other repository in
 release, with [`scripts/fan_out.py`](../../scripts/fan_out.py):
 
 - the pins of this repository's workflows in `.github/workflows/`: a pin at a commit
-  SHA moves to the release's commit, with the tag in its comment; a pin at a bare
-  tag moves to the new tag. Each keeps the form it had;
+  SHA with the tag in its comment moves to the release's commit and tag; a pin at a
+  bare tag moves to the new tag. Each keeps the form it had. A pin at a SHA with no
+  tag comment can't be compared with the release (it may be a later one), so the
+  file that holds it is left as it is and the summary says so;
 - the preset's pin in `renovate.json`, `github>those-who-run/.github#vX.Y.Z`;
 - the guard copy: `.claude/hooks/guard.py` and `.claude/settings.json` become
   `agent/guard.py` and `agent/settings.json` at the tag, byte for byte, where the
@@ -475,8 +477,23 @@ the preset turns them off (`default.json`), so each arrives once.
 
 It is safe to run again. A repository already on the release, or on a later one,
 gets no PR. Where a PR from the branch is open, it is left as it is (the summary
-says whether it matches what the run would write); a branch an earlier run left
-without a PR is replaced. One repository failing doesn't stop the others: the job's
+says whether it matches what the run would write). A branch with no open PR is
+replaced only when it is a single commit by the App's bot on top of the default
+branch, as an earlier run leaves it when it fails before opening the PR; any other
+branch, such as one the maintainer kept after closing its PR, is left alone and the
+repository is reported as skipped. The push is leased against the commit checked,
+so a push made meanwhile is never overwritten. When a release's PR is opened, any
+open fan-out PR by the bot for an earlier release in that repository is closed, with
+a comment naming the new PR; its branch is kept.
+
+The script reads and writes only regular files that git tracks (mode `100644`). A
+symbolic link or a submodule where a workflow file, `renovate.json`, a guard copy or
+a directory above them should be fails that repository, before anything is read or
+written, `--dry-run` included; every path is also checked to stay inside the clone
+before each read and write. A file that isn't UTF-8 is left as it is, with a note in
+the summary.
+
+One repository failing doesn't stop the others, whatever the error: the job's
 summary has a row for each repository, and the job fails at the end if any failed.
 Once the cause is fixed, re-run the failed job: the repositories that already have
 their PR are left alone.
@@ -491,7 +508,12 @@ token starts the repository's CI through `pull_request`; one opened with the
 - scoped to the repositories in the list other than this one (`repositories`, from
   `scripts/fan_out.py --names`). The App must be installed on each of them: a
   repository it isn't installed on fails the token, and so the whole job, before any
-  PR is opened;
+  PR is opened. The release is already made by then, so once the App is installed,
+  re-running the failed job opens the PRs. The same goes for a permission added to
+  the App: GitHub doesn't grant it until the installation accepts it, and until then
+  minting fails with "The permissions requested are not granted to this
+  installation". When minting fails, the job's summary says to check the
+  installation's permissions and repository access;
 - narrowed to Contents, Pull requests and Workflows, each `write`: the branch, the
   PR, and the changes under `.github/workflows/`, which GitHub refuses without
   Workflows;
