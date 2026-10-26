@@ -57,7 +57,9 @@ Go tool dependencies carry a notice outside the list (CC-BY-3.0 in the structtag
 packages, OFL-1.1 in `github.com/alecthomas/chroma`, Go's PATENTS grant in
 `golang.org/x/*`), and so does the Python package `wcwidth` (HPND-Markus-Kuhn),
 which copier needs for chassis's template check, and `github.com/opencontainers/go-digest`
-(CC-BY-SA-4.0 on its documentation), which buf needs in contracts' tools.
+(CC-BY-SA-4.0 on its documentation) and `github.com/opencontainers/image-spec`
+(Apache-2.0 and MIT, with the DCO's contributor sign-off text), which buf needs in
+contracts' tools.
 dependency-review-action can only exempt a package from the licence
 check, by its exact name, so those packages are listed one by one in the workflow and
 the notices stay off the global list. They still get the vulnerability check.
