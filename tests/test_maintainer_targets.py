@@ -51,6 +51,30 @@ def unhandled():
     call["unhandled"] = True
     done(status=404)
 
+# A call GitHub refuses, by a pattern over its arguments: no access (403), an expired
+# login (401) and so on, with gh's summary on stderr as gh prints it.
+for rule in state.get("fail", []):
+    if re.search(rule["match"], " ".join(args)):
+        if rule["status"] == 0:
+            # Accepted but not applied: GitHub said yes and nothing changed.
+            call["dropped"] = True
+            with open(log_path, "a") as log:
+                log.write(json.dumps(call) + "\n")
+            print("{}")
+            sys.exit(0)
+        call["failed"] = rule["status"]
+        if args[:2] in (["variable", "set"], ["secret", "set"]):
+            sys.stdin.read()
+        with open(log_path, "a") as log:
+            log.write(json.dumps(call) + "\n")
+        print(json.dumps({"message": rule.get("message", "Forbidden")}))
+        print(f"gh: {rule.get('message', 'Forbidden')} (HTTP {rule['status']})", file=sys.stderr)
+        sys.exit(1)
+
+def camel(name):
+    # gh names a field's value in item-list's JSON with its camelCase().
+    return name[:1].lower() + name[1:]
+
 if args[:1] == ["project"]:
     p = state["project"]
     if args[1] != "item-edit" and (args[2] != str(p["number"]) or opt("--owner") != p["owner"]):
@@ -60,14 +84,19 @@ if args[:1] == ["project"]:
     if args[1] == "field-list":
         done({"fields": p["fields"], "totalCount": len(p["fields"])})
     if args[1] == "item-list":
-        items = [dict(i) for i in p["items"]]
-        for i in items:
-            if i.get("status") is None:
-                i.pop("status", None)
-        done({"items": items, "totalCount": len(items)})
+        key = camel(p.get("status_field", "Status"))
+        items = []
+        for i in p["items"]:
+            shown = {k: v for k, v in i.items() if k != "status"}
+            if i.get("status") is not None:
+                shown[key] = i["status"]
+            items.append(shown)
+        # gh stops at --limit; totalCount still counts every card.
+        done({"items": items[:int(opt("--limit"))], "totalCount": len(items)})
     if args[1] == "item-edit":
         assert opt("--project-id") == p["id"], args
         field = [f for f in p["fields"] if f["id"] == opt("--field-id")][0]
+        assert field["name"] == p.get("status_field", "Status"), field
         option = [o for o in field["options"] if o["id"] == opt("--single-select-option-id")][0]
         item = [i for i in p["items"] if i["id"] == opt("--id")][0]
         item["status"] = option["name"]
@@ -169,12 +198,12 @@ unhandled()
 STATUS_OPTIONS = ["Needs triage", "Ready", "In progress", "In review", "Done"]
 
 
-def status_field(ids=None):
+def status_field(ids=None, names=STATUS_OPTIONS, name="Status"):
     """The project's Status field, with option IDs that change when the options are
     recreated: the script must never assume them."""
-    ids = ids or {name: f"opt-{n}-{name.lower().replace(' ', '-')}" for n, name in enumerate(STATUS_OPTIONS)}
-    return {"id": "PVTSSF_status", "name": "Status", "type": "ProjectV2SingleSelectField",
-            "options": [{"id": ids[name], "name": name} for name in STATUS_OPTIONS]}
+    ids = ids or {o: f"opt-{n}-{o.lower().replace(' ', '-')}" for n, o in enumerate(names)}
+    return {"id": "PVTSSF_status", "name": name, "type": "ProjectV2SingleSelectField",
+            "options": [{"id": ids[o], "name": o} for o in names]}
 
 
 def card(item_id, repo, number, status, kind="Issue"):
@@ -213,9 +242,13 @@ class Run:
 
     @property
     def writes(self):
+        """The writes the scripts sent, refused or not."""
         return [c for c in self.calls
                 if c["argv"][:2] in (["project", "item-edit"], ["variable", "set"], ["secret", "set"])
                 or c.get("method", "GET") != "GET"]
+
+    def sent(self, *argv):
+        return [c for c in self.calls if c["argv"][:len(argv)] == list(argv)]
 
 
 class Targets(unittest.TestCase):
@@ -287,7 +320,8 @@ class BoardSync(Targets):
         self.assertIn(f"{ORG}/paddock#2: moved: Needs triage -> Ready", run.out)
         self.assertIn(f"{ORG}/paddock#3: moved: Ready -> Done", run.out)
         self.assertIn(f"{ORG}/radio#1: moved: Ready -> Done", run.out)
-        self.assertIn("moved 5, already right 1, kept in progress or review 2, not found 0, refused 0; "
+        self.assertIn("moved 5, already right 1, kept in progress, review or another column 2, "
+                      "not found 0, refused 0; "
                       "2 cards that aren't issues left alone", run.out)
 
     def test_ids_are_looked_up_by_name(self):
@@ -358,6 +392,63 @@ class BoardSync(Targets):
         self.assertIn(f"{ORG}/paddock#3: would move: Ready -> Done", run.out)
         self.assertIn(f"{ORG}/paddock#7: would move: In progress -> Done", run.out)
         self.assertIn("would move 5, already right 1", run.out)
+
+    def test_every_column_must_exist_by_name(self):
+        # A renamed column, such as GitHub's default "In Progress", stops the run before
+        # any move, rather than letting its cards be moved to Ready.
+        for gone, renamed in (("In progress", "In Progress"), ("In review", "Review"),
+                              ("Needs triage", "Triage")):
+            with self.subTest(renamed=renamed):
+                names = [renamed if n == gone else n for n in STATUS_OPTIONS]
+                self.state["project"]["fields"] = [status_field(names=names)]
+                for item in self.state["project"]["items"]:
+                    if item["status"] == gone:
+                        item["status"] = renamed
+                before = json.loads(json.dumps(self.state["project"]))
+                run = self.make("board")
+                self.assertEqual(run.code, 2, run.out + run.err)
+                self.assertIn(f'Status has no option named "{gone}"', run.err)
+                self.assertEqual(run.writes, [])
+                self.assertEqual(self.state["project"], before)
+                self.setUp()
+
+    def test_a_card_in_another_column_moves_only_to_done(self):
+        # A column added later is never overwritten while its issue is open.
+        self.state["project"]["fields"] = [status_field(names=[*STATUS_OPTIONS, "Blocked"])]
+        self.state["project"]["items"] = [card("I_blocked", "paddock", 2, "Blocked"),
+                                          card("I_blocked_triage", "paddock", 1, "Blocked"),
+                                          card("I_blocked_closed", "paddock", 3, "Blocked")]
+        run = self.make("board")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(self.status("I_blocked"), "Blocked")
+        self.assertEqual(self.status("I_blocked_triage"), "Blocked")
+        self.assertEqual(self.status("I_blocked_closed"), "Done")
+        self.assertIn(f"{ORG}/paddock#3: moved: Blocked -> Done", run.out)
+        self.assertIn("moved 1, already right 0, kept in progress, review or another column 2", run.out)
+
+    def test_a_field_with_another_name_is_read_under_ghs_key(self):
+        # gh keys a field's value by its camelCase name: "Board Status" is "board Status".
+        self.state["project"]["status_field"] = "Board Status"
+        self.state["project"]["fields"] = [{"id": "PVTF_status", "name": "Status", "type": "ProjectV2Field"},
+                                           status_field(name="Board Status")]
+        self.state_path.write_text(json.dumps(self.state))
+        self.calls_path.write_text("")
+        result = subprocess.run(["bash", str(ROOT / "scripts" / "board-sync.sh"), "--field", "Board Status"],
+                                env=self.env, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.state = json.loads(self.state_path.read_text())
+        # The cards with a status were read as having one: In progress and the card
+        # already Ready weren't touched.
+        self.assertEqual(self.status("I_working"), "In progress")
+        self.assertEqual(self.status("I_closed"), "Done")
+        self.assertIn("moved 5, already right 1, kept in progress, review or another column 2", result.stdout)
+
+    def test_more_cards_than_the_limit_moves_nothing(self):
+        run = self.make("board", env={"BOARD_ITEM_LIMIT": "4"})
+        self.assertEqual(run.code, 2, run.out + run.err)
+        self.assertIn("has 10 cards, more than the 4 read", run.err)
+        self.assertEqual(run.writes, [])
+        self.assertEqual(self.make("board", env={"BOARD_ITEM_LIMIT": "10"}).code, 0)
 
     def test_a_card_whose_issue_is_not_found_is_reported(self):
         self.state["project"]["items"].append(card("I_gone", "paddock", 99, "Ready"))
@@ -460,6 +551,93 @@ class ReleaseEnvs(Targets):
                      f"{ORG}/.github: wrong: no environment secret RELEASE_APP_PRIVATE_KEY",
                      f"{ORG}/radio: wrong: no release-please environment"):
             self.assertIn(line, run.out)
+
+    def test_a_refused_branch_policy_write_never_stores_the_key(self):
+        # radio has a policy other than main, and no main: the setup must add main and
+        # remove the other before the key goes in.
+        for refused in (r"^api -X POST repos/those-who-run/radio/environments/release-please/deployment-branch-policies -f",
+                        r"^api -X DELETE repos/those-who-run/radio/environments/release-please/deployment-branch-policies/7$",
+                        r"^api -X PUT repos/those-who-run/radio/environments/release-please --input -$"):
+            with self.subTest(refused=refused):
+                self.state["envs"] = {f"{ORG}/radio": ready_env(
+                    policies=[{"id": 7, "name": "*", "type": "branch"}], variables={}, secrets={})}
+                self.state["fail"] = [{"match": refused, "status": 422, "message": "Validation Failed"}]
+                run = self.make("envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}")
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn(f"{ORG}/radio: not set up: GitHub refused", run.err)
+                self.assertEqual(run.sent("secret", "set", "RELEASE_APP_PRIVATE_KEY", "--env",
+                                           "release-please", "--repo", f"{ORG}/radio"), [])
+                self.assertEqual(run.sent("variable", "set", "RELEASE_APP_CLIENT_ID", "--env",
+                                           "release-please", "--repo", f"{ORG}/radio"), [])
+                self.assertEqual(self.state["envs"][f"{ORG}/radio"]["secrets"], {})
+                # The other repository was set up in full.
+                self.assertEqual(self.state["envs"][f"{ORG}/.github"]["secrets"],
+                                 {"RELEASE_APP_PRIVATE_KEY": self.pem.read_text()})
+                self.assert_no_values(run)
+
+    def test_the_key_waits_for_the_policies_read_back(self):
+        # GitHub accepts the writes but the environment still isn't main alone, or
+        # still allows every branch: the read-back stops the setup before the key.
+        for dropped, why in (
+            (r"^api -X DELETE repos/those-who-run/radio/environments/release-please/deployment-branch-policies/7$",
+             "its branch policies aren't main alone"),
+            (r"^api -X PUT repos/those-who-run/radio/environments/release-please --input -$",
+             "custom_branch_policies isn't true"),
+        ):
+            with self.subTest(dropped=dropped):
+                self.state["envs"] = {f"{ORG}/radio": ready_env(
+                    env={"deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": False}},
+                    policies=[{"id": 7, "name": "*", "type": "branch"}], variables={}, secrets={})}
+                self.state["fail"] = [{"match": dropped, "status": 0}]
+                run = self.make("envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}")
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn(f"{ORG}/radio: not set up: read back after the writes, "
+                              f"the environment is not safe for the key: {why}", run.err)
+                self.assertEqual(self.state["envs"][f"{ORG}/radio"]["secrets"], {})
+                self.assertEqual(self.state["envs"][f"{ORG}/radio"]["variables"], {})
+
+    def test_a_refused_read_of_the_config_is_not_doesnt_release(self):
+        # A 403 or an expired login isn't a 404: the run stops, having written nothing.
+        for status in (403, 401):
+            for target in (["envs-check"], ["envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}"]):
+                with self.subTest(status=status, target=target[0]):
+                    self.state["fail"] = [{"match": r"^api repos/those-who-run/\.github/contents/release-please-config\.json$",
+                                           "status": status, "message": "Forbidden"}]
+                    run = self.make(*target)
+                    self.assertEqual(run.code, 2, run.out + run.err)
+                    self.assertIn(f"{ORG}/.github: can't tell whether it releases", run.err)
+                    self.assertIn(f"HTTP {status}", run.err)
+                    self.assertNotIn(f"{ORG}/.github: no release-please-config.json", run.out)
+                    self.assertEqual(run.writes, [])
+                    self.assert_no_values(run)
+
+    def test_every_call_refused_fails(self):
+        self.state["fail"] = [{"match": ".", "status": 401, "message": "Bad credentials"}]
+        for target in (["envs-check"], ["envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}"]):
+            with self.subTest(target=target[0]):
+                run = self.make(*target)
+                self.assertEqual(run.code, 2, run.out + run.err)
+                self.assertIn("Bad credentials", run.err)
+                self.assertNotIn("set up", run.out)
+                self.assertEqual([c for c in run.writes if not c.get("failed")], [])
+
+    def test_no_releasing_repository_fails(self):
+        self.state["files"] = {}
+        run = self.make("envs-check")
+        self.assertEqual(run.code, 2, run.out + run.err)
+        self.assertIn("no repository to look at", run.err)
+
+    def test_a_pem_path_with_spaces(self):
+        folder = self.tmp / "release app keys"
+        folder.mkdir()
+        pem = folder / "twr release key.pem"
+        pem.write_text(self.pem.read_text())
+        run = self.make("envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={pem}")
+        self.assertEqual(run.code, 0, run.out + run.err)
+        for repo in self.releasing:
+            self.assertEqual(self.state["envs"][repo]["secrets"], {"RELEASE_APP_PRIVATE_KEY": pem.read_text()})
+        self.assertNotIn(str(pem), run.out + run.err)
+        self.assertNotIn("release app keys", run.out + run.err)
 
     def test_envs_check_passes_when_every_environment_is_set_up(self):
         for repo in self.releasing:

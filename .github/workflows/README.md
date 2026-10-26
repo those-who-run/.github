@@ -408,15 +408,26 @@ For each repository that adopts release-please (first `.github`):
    - deployment branches: `main` only, no required reviewers;
    - variable `RELEASE_APP_CLIENT_ID`: the App's Client ID (not the numeric App ID,
      which only `scripts/repos.json` needs);
-   - secret `RELEASE_APP_PRIVATE_KEY`: a private key generated for this repository in
-     the App's settings. Store it, then delete the downloaded file at once. A key is
-     never kept on disk for a later repository: each repository gets a new key.
-     Delete a key in the App's settings once no environment uses it.
+   - secret `RELEASE_APP_PRIVATE_KEY`: the release App's private key, an
+     environment secret, never a repository secret.
 
-   `make envs CLIENT_ID=<Client ID> PEM=<key file>` does this step in every
-   repository that releases, storing the one key in each; `make envs-check` reports
-   what each has (names only). To give a repository a key of its own, run
-   `scripts/release-envs.sh <owner/repo>` with `CLIENT_ID` and `PEM` set.
+   One private key of the `twr-release` App is shared by the `release-please`
+   environment of every repository that releases (decided by the maintainer on
+   2026-10-26). Every key of the App has the same access, so a key per repository
+   would only let one be revoked alone; it would not limit what a leaked key can do.
+   `make envs CLIENT_ID=<Client ID> PEM=<key file>` sets the environment, the variable
+   and the secret in every repository that releases, then checks them, and
+   `make envs-check` reports what each has (names only). Delete the downloaded key
+   file once it is stored.
+
+   To rotate the key: generate a new private key on the App's settings page, run
+   `make envs` again with the new file, check with `make envs-check`, then delete the
+   old key on the App's page.
+
+   A single new repository takes the shared key with `scripts/release-envs.sh
+   <owner/repo>`, with `CLIENT_ID` and `PEM` set, which sets up that repository alone.
+   If the key file is no longer at hand, rotate the key instead, which reaches the
+   new repository too once it has its `release-please-config.json`.
 3. Make sure the repository is in `scripts/repos.json`, then run
    `make protect` (the check, the apply, and the check again).
    `make new-repo-check REPO=<name>` then reads everything a new repository needs.

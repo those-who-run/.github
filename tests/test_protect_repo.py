@@ -36,7 +36,7 @@ PAGE = %d
 state_path, log_path = os.environ["GH_STATE"], os.environ["GH_CALLS"]
 state = json.load(open(state_path))
 args = sys.argv[1:]
-call = {"argv": args, "method": "GET", "path": None, "fields": {}, "input": None}
+call = {"argv": args, "method": "GET", "path": None, "fields": {}, "input": None, "query": ""}
 assert args[0] == "api", args
 i = 1
 while i < len(args):
@@ -53,7 +53,7 @@ while i < len(args):
             v = {"true": True, "false": False}.get(v, int(v) if v.isdigit() else v)
         call["fields"][k] = v; i += 2
     else:
-        call["path"] = a; i += 1
+        call["path"], _, call["query"] = a.partition("?"); i += 1
 
 # A write GitHub refuses: its error body on stdout and gh's summary on stderr, as gh
 # prints them.
@@ -116,8 +116,12 @@ if rest == "":
     done({})
 if rest == "/rulesets":
     if method == "GET":
+        # GitHub adds the organisation's rulesets unless includes_parents=false.
+        own_only = "includes_parents=false" in call["query"].split("&")
+        listed = r["_rulesets"] + ([] if own_only else state.get("org_rulesets", []))
         done_pages([{"id": x["id"], "name": x["name"], "target": x["target"],
-                     "enforcement": x["enforcement"]} for x in r["_rulesets"]])
+                     "enforcement": x["enforcement"],
+                     "source_type": x.get("source_type", "Repository")} for x in listed])
     r["_rulesets"].append(dict(body, id=next_id()))
     done({})
 m = re.fullmatch(r"/rulesets/(\d+)", rest)
@@ -854,6 +858,20 @@ class ProtectRepo(unittest.TestCase):
         self.assertEqual(after.code, 1)
         self.assertNotIn("ruleset 'main' is not enforced", after.out)
         self.assertIn("example/tool: drift: ruleset 'by hand' is not enforced", after.out)
+
+    def test_the_organisations_rulesets_are_not_this_repositorys_drift(self):
+        # An organisation ruleset in evaluate is no drift an apply here could fix.
+        self.everything_listed()
+        self.state["org_rulesets"] = [{"id": 5000, "name": "org trial", "target": "branch",
+                                       "enforcement": "evaluate", "source_type": "Organization"}]
+        self.run_script("--all")
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 0, run.out)
+        self.assertNotIn("org trial", run.out + run.err)
+        lists = [c for c in run.calls if c["method"] == "GET" and c["path"].endswith("/rulesets")]
+        self.assertTrue(lists)
+        for c in lists:
+            self.assertIn("includes_parents=false", c["query"].split("&"))
 
     def test_check_reports_a_missing_codeowners_file(self):
         self.everything_listed()

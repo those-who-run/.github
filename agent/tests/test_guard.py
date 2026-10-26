@@ -455,6 +455,15 @@ MAINTAINER_ONLY = [
     ("source scripts/board-sync.sh", "source scripts/env.sh"),
     (". scripts/protect-repo.sh", ". scripts/env.sh"),
     ("/usr/bin/env bash scripts/protect-repo.sh --all", "python3 -m unittest discover tests"),
+    # Dry runs pass: `bash -n` reads a script for its syntax, `make -n` prints the recipes.
+    ("bash scripts/board-sync.sh --dry-run", "bash -n scripts/board-sync.sh"),
+    ("bash -x scripts/protect-repo.sh", "sh -n scripts/protect-repo.sh"),
+    ("bash -e scripts/release-envs.sh", "bash -o noexec scripts/release-envs.sh"),
+    ("make board", "make -n board"),
+    ("make -s protect", "make --dry-run protect"),
+    ("make -C .github envs", "make -C .github --just-print envs"),
+    ("make -k envs-check", "make -nk envs-check"),
+    ("make -- -n board", "make --recon board"),
 ]
 
 
