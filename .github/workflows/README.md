@@ -29,7 +29,7 @@ Job: `checks`. Called from a caller job named `checks`, the required check is
 
 | Input | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `python-version` | string | `3.13` | The Python that runs pre-commit and any local Python hooks. |
+| `python-version` | string | `3.15` | The Python that runs pre-commit and any local Python hooks. |
 | `go-version-file` | string | empty, no Go | A `go.mod` or `.go-version` to install Go from, for local hooks that run Go tools. |
 | `setup` | string | empty | Shell commands run before the commit hooks, to install what local hooks need. |
 | `commit-types` | string | release-please's types | The types a PR title may use, separated by spaces. |

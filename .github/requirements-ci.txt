@@ -4,7 +4,7 @@
 # file, rather than in the workflow, so Renovate bumps it (renovate.json).
 # To regenerate after changing the pre-commit pin by hand:
 #   echo 'pre-commit==X.Y.Z' | uv pip compile - --generate-hashes --universal \
-#     --python-version 3.13 --no-header -o .github/requirements-ci.txt
+#     --python-version 3.15 --no-header -o .github/requirements-ci.txt
 # and put this comment back.
 cfgv==3.5.0 \
     --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0 \
