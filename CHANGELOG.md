@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/those-who-run/.github/compare/v0.2.9...v0.2.10) (2026-10-26)
+
+
+### Bug Fixes
+
+* **release:** fan-out review fixes ([#43](https://github.com/those-who-run/.github/issues/43)) ([411dbd7](https://github.com/those-who-run/.github/commit/411dbd7a9e1af70b1c4cfc3ddea34181c981e548))
+
 ## [0.2.9](https://github.com/those-who-run/.github/compare/v0.2.8...v0.2.9) (2026-10-26)
 
 
