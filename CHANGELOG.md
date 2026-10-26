@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/those-who-run/.github/compare/v0.2.6...v0.2.7) (2026-10-26)
+
+
+### Bug Fixes
+
+* **scripts:** review findings on the maintainer targets ([#35](https://github.com/those-who-run/.github/issues/35)) ([4a2e320](https://github.com/those-who-run/.github/commit/4a2e32003715053e5c4a1785d3832bf0c8cf8bed))
+
 ## [0.2.6](https://github.com/those-who-run/.github/compare/v0.2.5...v0.2.6) (2026-10-26)
 
 
