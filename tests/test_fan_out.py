@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,9 +71,19 @@ if args[:2] == ["pr", "list"]:
         print("gh: HTTP 403: Resource not accessible by integration", file=sys.stderr)
         done(status=1)
     assert opt("--state") == "open", args
-    prs = [{"number": p["number"], "url": p["url"]} for p in state["prs"]
-           if p["repo"] == repo and p["head"] == head and p["state"] == "open"]
-    done(json.dumps(prs))
+    if repo in state.get("garbage", []):
+        done("not json")
+    prs = [{"number": p["number"], "url": p["url"], "headRefName": p["head"],
+            "author": {"login": p.get("author", "someone")}} for p in state["prs"]
+           if p["repo"] == repo and p["state"] == "open" and head in (None, p["head"])]
+    fields = opt("--json").split(",")
+    done(json.dumps([{k: v for k, v in pr.items() if k in fields} for pr in prs]))
+if args[:2] == ["pr", "close"]:
+    repo, number = opt("--repo"), int(args[2])
+    call["comment"] = opt("--comment")
+    [pr] = [p for p in state["prs"] if p["repo"] == repo and p["number"] == number]
+    pr["state"], pr["comment"] = "closed", opt("--comment")
+    done()
 if args[:2] == ["pr", "create"]:
     repo = opt("--repo")
     call["body"] = sys.stdin.read()
@@ -80,7 +91,7 @@ if args[:2] == ["pr", "create"]:
     url = f"https://github.com/{repo}/pull/{number}"
     state["prs"].append({"repo": repo, "number": number, "url": url, "head": opt("--head"),
                          "base": opt("--base"), "title": opt("--title"), "state": "open",
-                         "body": call["body"]})
+                         "body": call["body"], "author": "app/twr-release"})
     done(url)
 if args[:1] == ["api"] and args[1].startswith("users/"):
     assert args[2:] == ["--jq", ".id"], args
@@ -93,6 +104,18 @@ done(status=1)
 # The tests' git: no global or system config (a signing setting there would break
 # the commits), and a fixed identity. setUp fills it in.
 GIT_ENV: dict[str, str] = {}
+
+
+class Link:
+    """A symbolic link in a repository, to target."""
+
+    def __init__(self, target: str | Path):
+        self.target = str(target)
+
+
+BOT = "4242+twr-release[bot]@users.noreply.github.com"
+BOT_ENV = {"GIT_AUTHOR_NAME": "twr-release[bot]", "GIT_AUTHOR_EMAIL": BOT,
+           "GIT_COMMITTER_NAME": "twr-release[bot]", "GIT_COMMITTER_EMAIL": BOT}
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -170,7 +193,9 @@ class FanOut(unittest.TestCase):
         git(work, "init", "--quiet", "-b", "main")
         for path, content in files.items():
             (work / path).parent.mkdir(parents=True, exist_ok=True)
-            if isinstance(content, bytes):
+            if isinstance(content, Link):
+                (work / path).symlink_to(content.target)
+            elif isinstance(content, bytes):
                 (work / path).write_bytes(content)
             else:
                 (work / path).write_text(content)
@@ -180,6 +205,20 @@ class FanOut(unittest.TestCase):
         git(self.tmp, "clone", "--quiet", "--bare", str(work), str(bare))
         self.repos.append(repo)
         return repo
+
+    def push_branch(self, name: str, commits: list[dict[str, str]], branch: str = BRANCH):
+        """Push branch to the remote, with one commit on main per entry, each by the
+        identity it names (GIT_AUTHOR_* and GIT_COMMITTER_*)."""
+        work = self.tmp / "branch-work" / name
+        git(self.tmp, "clone", "--quiet", str(self.tmp / "remotes" / ORG / f"{name}.git"), str(work))
+        git(work, "checkout", "--quiet", "-b", branch)
+        for i, who in enumerate(commits):
+            (work / f"note-{i}.txt").write_text(f"{i}\n")
+            git(work, "add", "-A")
+            subprocess.run(["git", "commit", "--quiet", "-m", f"commit {i}"], cwd=work, check=True,
+                           env={**os.environ, **GIT_ENV, **who})
+        git(work, "push", "--quiet", "origin", branch)
+        return git(work, "rev-parse", "HEAD").strip()
 
     def run_fan_out(self, *args: str) -> subprocess.CompletedProcess:
         listing = self.tmp / "repos.json"
@@ -386,15 +425,105 @@ class FanOut(unittest.TestCase):
         self.assertEqual(git(bare, "rev-parse", BRANCH), git(bare, "rev-parse", "main"))
         self.assertIn("left alone; it differs from what this run would write", done.stdout)
 
-    def test_a_branch_left_without_a_pr_is_replaced(self):
+    def test_the_bots_branch_left_without_a_pr_is_replaced(self):
         # An earlier run pushed the branch, then failed before opening the PR.
         self.remote("ecu", {".github/workflows/ci.yml": CI})
-        bare = self.tmp / "remotes" / ORG / "ecu.git"
-        git(bare, "branch", BRANCH, "main")
-        done = self.run_fan_out()
+        self.push_branch("ecu", [BOT_ENV])
+        done = self.run_fan_out("--app-slug", "twr-release")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(self.prs()), 1)
         self.assertIn(self.sha, self.on_branch("ecu", ".github/workflows/ci.yml"))
+
+    def test_a_branch_with_someone_elses_work_is_left_alone(self):
+        # The maintainer closed the PR on purpose and kept the branch with a commit
+        # of his own on it, or the bot's commit has another on top: a plain push
+        # --force would replace either, and this test would fail.
+        person = {"GIT_AUTHOR_NAME": "maintainer", "GIT_AUTHOR_EMAIL": "maintainer@example.com",
+                  "GIT_COMMITTER_NAME": "maintainer", "GIT_COMMITTER_EMAIL": "maintainer@example.com"}
+        cases = {"his own commit": [person], "the bot's commit and his": [BOT_ENV, person],
+                 "two of the bot's": [BOT_ENV, BOT_ENV]}
+        for n, (case, commits) in enumerate(cases.items()):
+            with self.subTest(case):
+                name = f"repo{n}"
+                self.remote(name, {".github/workflows/ci.yml": CI})
+                head = self.push_branch(name, commits)
+                done = self.run_fan_out("--app-slug", "twr-release", "--repo", f"{ORG}/{name}")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(git(self.tmp / "remotes" / ORG / f"{name}.git", "rev-parse", BRANCH).strip(), head)
+                self.assertEqual([p for p in self.prs() if p["repo"] == f"{ORG}/{name}"], [])
+                self.assertIn(f"{ORG}/{name}: skipped", done.stdout)
+                self.assertIn("isn't one commit by the App's bot", done.stdout)
+
+    def test_a_push_to_the_branch_during_the_run_is_not_overwritten(self):
+        # The bot's leftover branch passes the check, then someone pushes to it before
+        # the run's own push. The push is leased against the commit checked, so it is
+        # refused; a plain --force would overwrite theirs, and this test would fail.
+        self.remote("ecu", {".github/workflows/ci.yml": CI})
+        self.push_branch("ecu", [BOT_ENV])
+        bare = self.tmp / "remotes" / ORG / "ecu.git"
+        theirs = git(bare, "rev-parse", "main").strip()
+        real_git = shutil.which("git")
+        wrapper = self.tmp / "bin" / "git"
+        wrapper.write_text(
+            f"#!{sys.executable}\nimport os, subprocess, sys\n"
+            f"if 'push' in sys.argv and os.path.exists({str(self.tmp / 'race')!r}):\n"
+            f"    os.remove({str(self.tmp / 'race')!r})\n"
+            f"    subprocess.run([{real_git!r}, '-C', {str(bare)!r}, 'update-ref', 'refs/heads/{BRANCH}', {theirs!r}], check=True)\n"
+            f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n")
+        wrapper.chmod(0o755)
+        (self.tmp / "race").write_text("")
+        done = self.run_fan_out("--app-slug", "twr-release")
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(f"{ORG}/ecu: failed", done.stderr)
+        self.assertEqual(git(bare, "rev-parse", BRANCH).strip(), theirs)
+        self.assertEqual(self.prs(), [])
+
+    def test_without_the_apps_identity_no_branch_is_replaced(self):
+        self.remote("ecu", {".github/workflows/ci.yml": CI})
+        head = self.push_branch("ecu", [BOT_ENV])
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(git(self.tmp / "remotes" / ORG / "ecu.git", "rev-parse", BRANCH).strip(), head)
+        self.assertEqual(self.prs(), [])
+
+    # Older fan-out PRs.
+
+    def older_pr(self, repo: str, number: int, tag: str, author: str = "app/twr-release") -> dict:
+        pr = {"repo": repo, "number": number, "url": f"https://github.com/{repo}/pull/{number}",
+              "head": f"chore/github-{tag}", "state": "open", "author": author}
+        self.state["prs"].append(pr)
+        return pr
+
+    def test_an_older_fan_out_pr_is_closed_and_its_branch_kept(self):
+        repo = self.remote("ecu", {".github/workflows/ci.yml": CI})
+        self.push_branch("ecu", [BOT_ENV], branch="chore/github-v0.2.8")
+        self.older_pr(repo, 1, "v0.2.8")
+        self.older_pr(repo, 2, "v0.2.7", author="maintainer")  # not the bot's
+        self.older_pr(repo, 3, "v0.4.0")  # a later release
+        self.state["prs"].append({"repo": repo, "number": 4, "url": "u", "head": "feature", "state": "open",
+                                  "author": "app/twr-release"})
+        self.save()
+        done = self.run_fan_out("--app-slug", "twr-release")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        prs = {p["number"]: p for p in self.prs()}
+        self.assertEqual({n: p["state"] for n, p in prs.items()},
+                         {1: "closed", 2: "open", 3: "open", 4: "open", 5: "open"})
+        self.assertEqual(prs[5]["head"], BRANCH)
+        self.assertIn(prs[5]["url"], prs[1]["comment"])
+        self.assertIn("the branch is kept", prs[1]["comment"])
+        [close] = [c for c in self.calls() if c["argv"][:2] == ["pr", "close"]]
+        self.assertNotIn("--delete-branch", close["argv"])
+        self.assertIn("chore/github-v0.2.8", self.branches("ecu"))
+        self.assertIn("closed #1 as superseded", done.stdout)
+
+    def test_a_dry_run_names_the_pr_it_would_close(self):
+        repo = self.remote("ecu", {".github/workflows/ci.yml": CI})
+        self.older_pr(repo, 1, "v0.2.8")
+        self.save()
+        done = self.run_fan_out("--app-slug", "twr-release", "--dry-run")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("would close #1 as superseded", done.stdout)
+        self.assertEqual(self.prs()[0]["state"], "open")
 
     def test_a_repository_with_no_workflow_references(self):
         self.remote("dash", {".github/workflows/ci.yml": "jobs:\n  x:\n    runs-on: ubuntu-latest\n",
@@ -407,6 +536,138 @@ class FanOut(unittest.TestCase):
         self.assertNotIn(".github/workflows", pr["body"])
         self.assertEqual(self.on_branch("dash", ".github/workflows/ci.yml"), "jobs:\n  x:\n    runs-on: ubuntu-latest\n")
         self.assertIn(f"{ORG}/podium: current", done.stdout)
+
+    # Symbolic links: nothing outside the clone is read or written.
+
+    def outside(self) -> Path:
+        out = self.tmp / "outside"
+        out.mkdir(exist_ok=True)
+        (out / "victim.py").write_bytes(b"precious\n")
+        (out / "ci.yml").write_text(CI)
+        return out
+
+    def assert_untouched(self, out: Path):
+        self.assertEqual((out / "victim.py").read_bytes(), b"precious\n")
+        self.assertEqual((out / "ci.yml").read_text(), CI)
+
+    def test_symbolic_links_are_refused(self):
+        out = self.outside()
+        cases = {
+            "a guard copy": {".claude/hooks/guard.py": Link(out / "victim.py"), "renovate.json": RENOVATE},
+            "a workflow file": {".github/workflows/ci.yml": Link(out / "ci.yml"), "renovate.json": RENOVATE},
+            "the workflows directory": {".github/workflows": Link(out), "renovate.json": RENOVATE},
+            "the .claude directory": {".claude": Link(out), "renovate.json": RENOVATE},
+        }
+        for n, (case, files) in enumerate(cases.items()):
+            for dry in (False, True):
+                with self.subTest(case, dry_run=dry):
+                    name = f"link{n}{'d' if dry else ''}"
+                    self.remote(name, files)
+                    args = ["--repo", f"{ORG}/{name}"] + (["--dry-run"] if dry else [])
+                    done = self.run_fan_out(*args)
+                    self.assertEqual(done.returncode, 1, done.stdout)
+                    self.assertIn(f"{ORG}/{name}: failed", done.stderr)
+                    self.assertIn("refusing to follow it", done.stderr)
+                    self.assert_untouched(out)
+                    self.assertEqual(self.branches(name), ["main"])
+                    # Nothing from the outside file reaches the diff either.
+                    self.assertNotIn("precious", done.stdout)
+        self.assertEqual(self.prs(), [])
+
+    def test_each_guard_against_links_on_its_own(self):
+        # Two checks, each enough alone: git's modes before anything is read, and the
+        # path on disk before each read and write.
+        for files in ({".github/workflows/ci.yml": "120000"}, {".github/workflows": "120000"},
+                      {".claude/hooks/guard.py": "160000"}, {"template": "120000", "copier.yml": "100644"}):
+            with self.subTest(files):
+                clone = self.tmp / "clone-modes"
+                clone.mkdir(exist_ok=True)
+                (clone / "copier.yml").write_text("_subdirectory: template\n")
+                with self.assertRaisesRegex(fan_out.Failure, "refusing to follow it"):
+                    fan_out.candidates(clone, files)
+        clone = self.tmp / "clone-disk"
+        (clone / ".github").mkdir(parents=True)
+        out = self.outside()
+        (clone / ".github" / "workflows").symlink_to(out)
+        (clone / "guard.py").symlink_to(out / "victim.py")
+        for rel in (".github/workflows/ci.yml", "guard.py", "../outside/victim.py"):
+            with self.subTest(rel):
+                with self.assertRaises(fan_out.Failure):
+                    fan_out.safe(clone, rel)
+
+    def test_a_link_elsewhere_in_the_repository_is_no_matter(self):
+        self.remote("ecu", {".github/workflows/ci.yml": CI, "docs/link": Link("../README.md"), "README.md": "x\n"})
+        self.assertEqual(self.run_fan_out().returncode, 0)
+        self.assertEqual(len(self.prs()), 1)
+
+    # Unexpected input.
+
+    def test_a_file_that_isnt_utf8_is_skipped(self):
+        self.remote("aaa", {".github/workflows/ci.yml": CI, ".github/workflows/latin.yml": b"# caf\xe9\n" + pinned("x.yml").encode()})
+        self.remote("bbb", {".github/workflows/ci.yml": CI})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(sorted(p["repo"] for p in self.prs()), [f"{ORG}/aaa", f"{ORG}/bbb"])
+        self.assertIn(".github/workflows/latin.yml is not UTF-8, so it was left as it is", done.stdout)
+        bare = self.tmp / "remotes" / ORG / "aaa.git"
+        self.assertIn(OLD_SHA.encode(), subprocess.run(
+            ["git", "show", f"{BRANCH}:.github/workflows/latin.yml"], cwd=bare, check=True, capture_output=True,
+            env={**os.environ, **GIT_ENV}).stdout)
+
+    def test_an_unexpected_error_fails_that_repository_only(self):
+        self.remote("aaa", {".github/workflows/ci.yml": CI})
+        self.remote("bbb", {".github/workflows/ci.yml": CI})
+        self.state["garbage"] = [f"{ORG}/aaa"]  # gh prints something that isn't JSON
+        self.save()
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn(f"{ORG}/aaa: failed (unexpected JSONDecodeError", done.stderr)
+        self.assertEqual([p["repo"] for p in self.prs()], [f"{ORG}/bbb"])
+        summary = Path(self.env["GITHUB_STEP_SUMMARY"]).read_text()
+        self.assertIn(f"| {ORG}/aaa | failed |", summary)
+        self.assertIn(f"| {ORG}/bbb | opened |", summary)
+
+    def test_a_template_subdirectory_behind_a_linked_temporary_directory(self):
+        real = self.tmp / "real-tmp"
+        real.mkdir()
+        (self.tmp / "linked-tmp").symlink_to(real)
+        self.env["TMPDIR"] = str(self.tmp / "linked-tmp")
+        self.remote("chassis", {"copier.yml": "_subdirectory: template\n",
+                                "template/renovate.json.jinja": RENOVATE})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.on_branch("chassis", "template/renovate.json.jinja"), RENOVATE.replace(OLD, NEW))
+
+    def test_a_subdirectory_that_climbs_out_is_ignored(self):
+        for value in ("../x", "/etc", "[[ name ]]"):
+            with self.subTest(value):
+                self.assertIsNone(fan_out.subdirectory(value))
+        self.assertEqual(fan_out.subdirectory("./template/"), "template")
+
+    def test_a_longer_owner_name_is_not_this_repository(self):
+        text = f"    uses: x{ORG}/.github/.github/workflows/a.yml@{OLD_SHA} # {OLD}\n"
+        self.assertEqual(fan_out.rewrite_pins(text, self.sha, NEW), text)
+        self.assertEqual(fan_out.referenced_versions(text), [])
+        for before in ("my-", "a.", "_"):
+            with self.subTest(before):
+                other = text.replace(f"x{ORG}", f"{before}{ORG}")
+                self.assertEqual(fan_out.rewrite_pins(other, self.sha, NEW), other)
+        # Still found after a space, a quote or `uses:`.
+        for line in (f"uses: {ORG}/.github/x.yml@{OLD}", f"uses: '{ORG}/.github/x.yml@{OLD}'"):
+            with self.subTest(line):
+                self.assertIn(NEW, fan_out.rewrite_pins(line, self.sha, NEW))
+
+    def test_a_bare_sha_without_a_tag_is_left_alone(self):
+        bare_sha = f"    uses: {ORG}/.github/.github/workflows/image.yml@{OLD_SHA}\n"
+        self.remote("ecu", {".github/workflows/ci.yml": CI, ".github/workflows/image.yml": "jobs:\n  x:\n" + bare_sha})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.on_branch("ecu", ".github/workflows/image.yml"), "jobs:\n  x:\n" + bare_sha)
+        self.assertIn(self.sha, self.on_branch("ecu", ".github/workflows/ci.yml"))
+        summary = Path(self.env["GITHUB_STEP_SUMMARY"]).read_text()
+        self.assertIn(".github/workflows/image.yml pins those-who-run/.github at a commit SHA with no tag comment", summary)
+        # The release's own SHA without a comment is current, not unknown.
+        self.assertFalse(fan_out.unversioned(bare_sha.replace(OLD_SHA, self.sha), self.sha))
 
     # Dry runs and failures.
 
@@ -496,6 +757,15 @@ class TheFanOutJob(unittest.TestCase):
         # Handed to the script in its step's environment only, once.
         self.assertEqual(self.block.count("steps.app.outputs.token"), 1)
         self.assertIn("          GH_TOKEN: ${{ steps.app.outputs.token }}\n", self.block)
+
+    def test_a_token_that_cant_be_minted_says_where_to_look(self):
+        self.assertIn("      - name: Why there is no token\n        if: failure() && steps.app.outcome == 'failure'\n",
+                      self.block)
+        hint = self.block[self.block.index("Why there is no token"):self.block.index("A PR in every repository")]
+        for words in ("installation", "Workflows", "repository access", "GITHUB_STEP_SUMMARY"):
+            self.assertIn(words, hint)
+        # It prints no secret, variable or step output.
+        self.assertNotIn("${{", hint)
 
     def test_it_checks_out_the_release_and_runs_the_script(self):
         self.assertIn("ref: ${{ needs.release.outputs.tag_name }}", self.block)

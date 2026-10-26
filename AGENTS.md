@@ -226,12 +226,14 @@ uses: those-who-run/.github/.github/workflows/<name>.yml@<sha> # vX.Y.Z
 **The fan-out.** When a release is made, the `fan-out` job of `release-pr.yml` runs
 `scripts/fan_out.py`, which opens one PR in every other repository in
 `scripts/repos.json` moving it onto the release: the pins of this repository's
-workflows (to the tag's commit SHA with the tag in the comment, or to the bare tag,
-whichever form the repository uses), the preset's pin in `renovate.json`, and the
-guard copy in `.claude/` (`agent/guard.py` and `agent/settings.json` at the tag),
-in chassis's template files too. The branch is `chore/github-vX.Y.Z` and the title
+workflows (to the tag's commit SHA with the tag in the comment, or to the bare
+tag, whichever form the repository uses; a SHA with no tag comment is left alone),
+the preset's pin in `renovate.json`, and the guard copy in `.claude/`
+(`agent/guard.py` and `agent/settings.json` at the tag), in chassis's template
+files too. The branch is `chore/github-vX.Y.Z` and the title
 `ci: those-who-run/.github vX.Y.Z`. It runs as the release App, so each PR starts
-the repository's CI, and a re-run opens no second PR. Nothing merges them: the
+the repository's CI, a re-run opens no second PR, and an open fan-out PR for an
+earlier release is closed in favour of the new one. Nothing merges them: the
 maintainer reviews and merges each one. The job's summary lists each repository's
 result, and the job fails if any repository failed. The App needs the Contents, Pull
 requests and Workflows permissions (read and write) and to be installed on every

@@ -93,6 +93,22 @@ jobs:
           permission-contents: write # the PR's branch
           permission-pull-requests: write # the PR
           permission-workflows: write # the pins in .github/workflows/
+      # Only when the token couldn't be minted: what to check, without the
+      # action's own message, which stays in its step's log.
+      - name: Why there is no token
+        if: failure() && steps.app.outcome == 'failure'
+        run: |
+          {
+            echo "## Fan-out: the release App's token couldn't be minted"
+            echo
+            echo "No repository was changed. Check the twr-release App's installation on the organisation:"
+            echo
+            echo "- it has accepted the permissions the fan-out asks for (Contents, Pull requests and Workflows, read and write). A permission added to the App is not granted until the installation accepts it;"
+            echo "- its repository access includes every repository in scripts/repos.json."
+            echo
+            echo "Then re-run this job."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::The release App's token couldn't be minted: check the installation's permissions (Contents, Pull requests, Workflows) and its repository access."
       - name: A PR in every repository
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

@@ -8,9 +8,10 @@ the release App's token in GH_TOKEN. For each repository in scripts/repos.json o
 than this one, it clones the default branch and moves it onto the release:
 
 - workflow pins: every `those-who-run/.github/...@<ref>` in `.github/workflows/`
-  moves to the release. A commit SHA becomes the release's commit, and a `# vX.Y.Z`
-  comment after it the new tag; a bare tag becomes the new tag. Each pin keeps the
-  form it had;
+  moves to the release. A commit SHA with a `# vX.Y.Z` comment becomes the
+  release's commit and tag; a bare tag becomes the new tag. Each pin keeps the form
+  it had. A SHA with no tag comment can't be compared with the release, so the file
+  holding it is left as it is, and the summary says so;
 - the Renovate preset: `github>those-who-run/.github#vX.Y.Z` in `renovate.json`;
 - the guard copy: `.claude/hooks/guard.py` and `.claude/settings.json` become
   `agent/guard.py` and `agent/settings.json` at the release, byte for byte, where
@@ -29,17 +30,27 @@ auto-merge: the maintainer merges each PR.
 It is safe to run again. A repository with nothing to move gets no PR, nor does one
 already ahead of the release. Where a PR from the branch is already open it is left
 as it is, and the run says whether it matches what this run would have written. A
-branch left behind by an earlier run with no open PR is replaced.
+branch with no open PR is replaced only when it is one commit by the App's bot on
+the default branch (an earlier run that failed before opening the PR); any other is
+left alone and reported. Open fan-out PRs by the bot for earlier releases are closed
+with a comment naming the new PR, and their branches kept.
 
-One repository failing doesn't stop the others. Each repository's result is printed,
+Only regular files git tracks (mode 100644) are read or written. A symbolic link or
+a submodule where one of the files above, or a directory above them, should be fails
+the repository before anything is read or written, and every path is checked to
+stay inside the clone. A file that isn't UTF-8 is left as it is, with a note.
+
+One repository failing, whatever the error, doesn't stop the others. Each
+repository's result is printed,
 and written to the job summary ($GITHUB_STEP_SUMMARY) when there is one; the run
 exits 1 at the end if any failed, 2 on bad arguments.
 
 --dry-run clones each repository and prints the diff it would commit, and pushes,
 commits and opens nothing. --names prints the repositories' names, comma-separated,
 for the App token's `repositories`. --app-slug names the App whose bot authors the
-commits (its noreply address is looked up with gh); without it, git's own identity
-is used. The files of the release are read from the git repository --source (this
+commits (its noreply address is looked up with gh) and whose branches and PRs may be
+replaced or closed; without it, git's own identity is used and nothing is replaced
+or closed. The files of the release are read from the git repository --source (this
 checkout by default) at the tag's commit, so no network is needed for them.
 
 Needs git and gh. Standard library only, Python 3.9 or later. The tests run it
@@ -70,7 +81,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 # A reference to this repository in a workflow: a reusable workflow or an action in
 # it, at a commit SHA (with the tag in a comment, or without) or at a tag.
 PIN = re.compile(
-    r"(?P<path>those-who-run/\.github/[^@\s'\"]+)@"
+    r"(?<![\w.-])(?P<path>those-who-run/\.github/[^@\s'\"]+)@"
     r"(?P<ref>[0-9a-f]{40}|v\d+\.\d+\.\d+)(?![0-9A-Za-z.])"
     r"(?P<comment>[ \t]+#[ \t]*)?(?P<comment_tag>v\d+\.\d+\.\d+)?(?![0-9A-Za-z.])"
 )
@@ -82,6 +93,7 @@ COPIES = {
     ".claude/hooks/guard.py": "agent/guard.py",
     ".claude/settings.json": "agent/settings.json",
 }
+REGULAR = "100644"
 SUBDIRECTORY = re.compile(r"""^_subdirectory:\s*["']?([^"'\s#]+)""", re.M)
 
 # A git command that reaches GitHub authenticates through gh, with GH_TOKEN, so the
@@ -126,57 +138,140 @@ def referenced_versions(text: str) -> list[tuple[int, int, int]]:
     return [version(t) for t in tags if TAG.match(t)]
 
 
-def roots(repo: Path) -> list[Path]:
-    """The repository, and a copier template's subdirectory when it has one."""
-    found = [repo]
+def tracked(clone: Path) -> dict[str, str]:
+    """Every path git tracks in the clone, with its mode (100644 a regular file,
+    120000 a symbolic link, 160000 a submodule)."""
+    entries = {}
+    for record in git(clone, "ls-files", "-s", "-z").split("\0"):
+        if record:
+            meta, path = record.split("\t", 1)
+            entries[path] = meta.split()[0]
+    return entries
+
+
+def subdirectory(value: str) -> str | None:
+    """copier's `_subdirectory` as a plain relative path, or None for one that is
+    templated, absolute, or climbs out of the repository."""
+    if re.search(r"[\[\]{}%\\]", value) or value.startswith("/"):
+        return None
+    parts = [p for p in value.split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    return "/".join(parts)
+
+
+def roots(clone: Path, files: dict[str, str]) -> list[str]:
+    """The prefixes to look under: the repository's root, and a copier template's
+    subdirectory when it sets one."""
+    found = [""]
     for name in ("copier.yml", "copier.yaml"):
-        config = repo / name
-        if config.is_file():
-            m = SUBDIRECTORY.search(config.read_text(encoding="utf-8"))
-            if m and not re.search(r"[\[\]{}%]", m[1]):
-                sub = (repo / m[1]).resolve()
-                if sub.is_dir() and repo.resolve() in sub.parents:
-                    found.append(sub)
+        if files.get(name) != REGULAR:
+            continue
+        text = read(safe(clone, name))
+        m = SUBDIRECTORY.search(text) if text is not None else None
+        sub = subdirectory(m[1]) if m else None
+        if sub and sub + "/" not in found:
+            found.append(sub + "/")
     return found
 
 
-def text_files(repo: Path) -> list[Path]:
-    """The files that may hold a pin or the preset."""
-    files = []
-    for root in roots(repo):
-        workflows = root / ".github" / "workflows"
-        if workflows.is_dir():
-            files += sorted(p for p in workflows.iterdir() if p.is_file() and WORKFLOW_FILE.search(p.name))
-        files += [root / name for name in RENOVATE_FILES if (root / name).is_file()]
-    return files
+def candidates(clone: Path, files: dict[str, str]) -> tuple[list[str], list[str]]:
+    """The files that may hold a pin or the preset, and the guard copies, each as a
+    path in the clone. Only regular files git tracks: a symbolic link, or a
+    submodule, where one of these files or the directories above it should be,
+    fails the repository rather than letting a write follow it out of the clone."""
+    texts, copies = [], []
+    for prefix in roots(clone, files):
+        watched = {prefix.rstrip("/"), f"{prefix}.github", f"{prefix}.github/workflows",
+                   f"{prefix}.claude", f"{prefix}.claude/hooks"} - {""}
+        for path, mode in files.items():
+            if path in watched and mode != REGULAR:
+                raise Failure(f"{path} is a symbolic link or a submodule (mode {mode}); refusing to follow it")
+        for path, mode in sorted(files.items()):
+            if not path.startswith(prefix):
+                continue
+            rest = path[len(prefix):]
+            is_text = (re.fullmatch(r"\.github/workflows/[^/]+", rest) and WORKFLOW_FILE.search(rest)) \
+                or rest in RENOVATE_FILES
+            is_copy = rest in COPIES
+            if not (is_text or is_copy):
+                continue
+            if mode != REGULAR:
+                raise Failure(f"{path} is not a regular file (mode {mode}); refusing to follow it")
+            (texts if is_text else copies).append(path)
+    return texts, copies
 
 
-def read(path: Path) -> str:
-    # Bytes decoded, not read_text: that turns CRLF into LF, and the rewrite would
-    # then change every line of a CRLF file.
-    return path.read_bytes().decode("utf-8")
+def safe(clone: Path, rel: str) -> Path:
+    """The file at rel in the clone, after checking that no part of the path is a
+    symbolic link and that it resolves inside the clone."""
+    path = clone
+    for part in rel.split("/"):
+        if part in ("", ".", ".."):
+            raise Failure(f"{rel}: not a plain path in the repository")
+        path = path / part
+        if path.is_symlink():
+            raise Failure(f"{rel}: {path.relative_to(clone)} is a symbolic link; refusing to follow it")
+    if clone.resolve() not in path.resolve().parents or not path.is_file():
+        raise Failure(f"{rel}: not a regular file inside the clone")
+    return path
 
 
-def plan(repo: Path, sha: str, tag: str, canonical: dict[str, bytes]) -> tuple[dict[Path, bytes], str | None]:
-    """The files to change and their new contents, or why the repository is left
-    alone (it already names a later release)."""
-    changes: dict[Path, bytes] = {}
-    newest = max((v for p in text_files(repo) for v in referenced_versions(read(p))), default=None)
+def read(path: Path) -> str | None:
+    """A file's text, or None when it isn't UTF-8. Bytes decoded, not read_text:
+    that turns CRLF into LF, and the rewrite would then change every line of a
+    CRLF file."""
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def unversioned(text: str, sha: str) -> bool:
+    """Whether the text pins this repository at a commit SHA other than the release's
+    with no tag beside it, which can't be compared with the release."""
+    return any(SHA.match(m["ref"]) and m["ref"] != sha and not m["comment_tag"] for m in PIN.finditer(text))
+
+
+@dataclass
+class Plan:
+    changes: dict[str, bytes] = field(default_factory=dict)
+    # Why the repository is left alone: it names a later release.
+    ahead: str | None = None
+    # Files left as they are, and why.
+    skipped: list[str] = field(default_factory=list)
+
+
+def plan(clone: Path, sha: str, tag: str, canonical: dict[str, bytes]) -> Plan:
+    """The files to change and their new contents. Nothing is written."""
+    out = Plan()
+    texts, copies = candidates(clone, tracked(clone))
+    contents = {}
+    for rel in texts:
+        text = read(safe(clone, rel))
+        if text is None:
+            out.skipped.append(f"{rel} is not UTF-8, so it was left as it is")
+        elif unversioned(text, sha):
+            out.skipped.append(
+                f"{rel} pins {CANONICAL} at a commit SHA with no tag comment, which can't be "
+                f"compared with {tag}, so it was left as it is")
+        else:
+            contents[rel] = text
+    newest = max((v for t in contents.values() for v in referenced_versions(t)), default=None)
     if newest is not None and newest > version(tag):
-        return {}, "already on v%d.%d.%d, later than %s" % (*newest, tag)
-    for path in text_files(repo):
-        old = read(path)
+        out.ahead = "already on v%d.%d.%d, later than %s" % (*newest, tag)
+        return out
+    for rel, old in contents.items():
         new = rewrite_pins(old, sha, tag)
-        if path.name in RENOVATE_FILES:
+        if rel.rsplit("/", 1)[-1] in RENOVATE_FILES:
             new = rewrite_preset(new, tag)
         if new != old:
-            changes[path] = new.encode("utf-8")
-    for root in roots(repo):
-        for copy, source in COPIES.items():
-            path = root / copy
-            if path.is_file() and path.read_bytes() != canonical[source]:
-                changes[path] = canonical[source]
-    return changes, None
+            out.changes[rel] = new.encode("utf-8")
+    for rel in copies:
+        source = COPIES[next(c for c in COPIES if rel == c or rel.endswith("/" + c))]
+        if safe(clone, rel).read_bytes() != canonical[source]:
+            out.changes[rel] = canonical[source]
+    return out
 
 
 def run(cmd: list[str], cwd: Path | None = None, stdin: str | None = None,
@@ -217,6 +312,9 @@ class Release:
     canonical: dict[str, bytes]
     # GIT_AUTHOR_* and GIT_COMMITTER_*, which win over any identity in git's config.
     author: dict[str, str] = field(default_factory=dict)
+    # The App whose bot opens the PRs; without it, no branch or PR is taken as the
+    # bot's, so none is replaced or closed.
+    slug: str = ""
 
     @property
     def branch(self) -> str:
@@ -260,49 +358,122 @@ def open_pr(repo: str, release: Release) -> dict | None:
     return prs[0] if prs else None
 
 
+def superseded(repo: str, release: Release) -> list[dict]:
+    """The open fan-out PRs, by the App's bot, for releases before this one."""
+    if not release.slug:
+        return []
+    out = run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
+               "--json", "number,url,headRefName,author"])
+    logins = {f"app/{release.slug}", f"{release.slug}[bot]"}
+    older = []
+    for pr in json.loads(out or "[]"):
+        m = re.fullmatch(r"chore/github-(v\d+\.\d+\.\d+)", pr.get("headRefName", ""))
+        if m and version(m[1]) < version(release.tag) and (pr.get("author") or {}).get("login") in logins:
+            older.append(pr)
+    return older
+
+
+def close_superseded(repo: str, release: Release, url: str) -> list[str]:
+    """Close the older fan-out PRs, each with a comment naming the new one. Their
+    branches stay."""
+    closed = []
+    for pr in superseded(repo, release):
+        comment = (f"Superseded by {url}, which moves this repository onto {CANONICAL} "
+                   f"{release.tag}. Closed by the release fan-out; the branch is kept.")
+        run(["gh", "pr", "close", str(pr["number"]), "--repo", repo, "--comment", comment])
+        closed.append(f"#{pr['number']}")
+    return closed
+
+
+def ours_on_top(clone: Path, release: Release) -> bool:
+    """Whether the fetched branch (refs/fan-out/branch) is one commit, authored and
+    committed by the App's bot, on top of the default branch: a branch an earlier
+    run pushed before it failed to open the PR. Anything else is someone's work."""
+    email = release.author.get("GIT_AUTHOR_EMAIL")
+    if not email:
+        return False
+    ref = "refs/fan-out/branch"
+    if git(clone, "rev-list", "--count", f"HEAD..{ref}").strip() != "1":
+        return False
+    who = git(clone, "log", "-1", "--format=%ae%n%ce%n%P", ref).splitlines()
+    return who[:2] == [email, email] and len(who[2].split()) == 1
+
+
 def move(repo: str, release: Release, work: Path, dry_run: bool) -> Result:
     existing = open_pr(repo, release)
     clone = work / repo.replace("/", "__")
-    run(["git", *GIT_AUTH, "clone", "--quiet", "--depth", "1", f"{GIT_BASE}/{repo}.git", str(clone)])
+    # Every commit but no file contents until they are read: the history is needed
+    # to tell whether a branch left behind is the bot's one commit on the base.
+    run(["git", *GIT_AUTH, "clone", "--quiet", "--filter=blob:none", "--no-tags",
+         f"{GIT_BASE}/{repo}.git", str(clone)])
     base = git(clone, "symbolic-ref", "--short", "HEAD").strip()
 
-    changes, ahead = plan(clone, release.sha, release.tag, release.canonical)
-    if ahead:
-        return Result(repo, "left alone", ahead)
-    if not changes:
-        return Result(repo, "current", f"{base} is already on {release.tag}")
-    for path, content in changes.items():
-        path.write_bytes(content)
-    changed = sorted(str(p.relative_to(clone)) for p in changes)
+    p = plan(clone, release.sha, release.tag, release.canonical)
+    notes = "; ".join(p.skipped)
+    if p.ahead:
+        return Result(repo, "left alone", "; ".join([p.ahead, *p.skipped]))
+    if not p.changes:
+        return Result(repo, "current", "; ".join([f"{base} is already on {release.tag}", *p.skipped]))
+    # Every path is checked again just before it is written.
+    for rel, content in p.changes.items():
+        safe(clone, rel).write_bytes(content)
+    changed = sorted(p.changes)
+
+    def detail(*parts: str) -> str:
+        return "; ".join([x for x in parts if x] + ([notes] if notes else []))
 
     if dry_run:
         diff = git(clone, "diff")
         print(f"--- {repo}: the diff on {release.branch} ---")
         print(diff, end="" if diff.endswith("\n") else "\n")
+        older = [f"#{pr['number']}" for pr in superseded(repo, release)]
+        closing = f"would close {', '.join(older)} as superseded" if older else ""
         if existing:
-            return Result(repo, "dry run", f"PR #{existing['number']} is open; it would be left alone", existing["url"])
-        return Result(repo, "dry run", f"would open a PR changing {count_files(changed)}")
+            return Result(repo, "dry run", detail(f"PR #{existing['number']} is open; it would be left alone", closing),
+                          existing["url"])
+        return Result(repo, "dry run", detail(f"would open a PR changing {count_files(changed)}", closing))
 
     if existing:
         # Left as it is: the maintainer may have pushed to it. Say whether it holds
         # what this run would have written.
-        git(clone, "fetch", "--quiet", "--depth", "1", "origin", f"refs/heads/{release.branch}", auth=True)
-        same = _matches(clone, "FETCH_HEAD", changed)
-        detail = "already open, left alone" + ("" if same else "; it differs from what this run would write")
-        return Result(repo, "PR open", detail, existing["url"])
+        git(clone, "fetch", "--quiet", "origin", f"+refs/heads/{release.branch}:refs/fan-out/branch", auth=True)
+        same = _matches(clone, "refs/fan-out/branch", changed)
+        closed = close_superseded(repo, release, existing["url"])
+        return Result(repo, "PR open", detail(
+            "already open, left alone" + ("" if same else "; it differs from what this run would write"),
+            f"closed {', '.join(closed)} as superseded" if closed else ""), existing["url"])
+
+    remote = git(clone, "ls-remote", "--heads", "origin", f"refs/heads/{release.branch}", auth=True).split()
+    if remote:
+        # A branch with no open PR: replaced only when it is the bot's own commit
+        # from an earlier run. One with anyone else's work on it, or a PR the
+        # maintainer closed on purpose, is left alone.
+        git(clone, "fetch", "--quiet", "origin", f"+refs/heads/{release.branch}:refs/fan-out/branch", auth=True)
+        if not ours_on_top(clone, release):
+            return Result(repo, "skipped", detail(
+                f"{release.branch} exists with no open PR and isn't one commit by the App's bot on {base}; "
+                f"left alone for the maintainer"))
 
     git(clone, "checkout", "--quiet", "-b", release.branch)
     git(clone, "add", "--", *changed)
     message = f"{release.title}\n\nRelease notes: {release.notes}\n"
     run(["git", "commit", "--quiet", "-m", message], cwd=clone, env=release.author)
-    # A branch left by an earlier run that opened no PR is replaced, and only if it
-    # is still the commit just read, so nothing pushed since is lost.
-    remote = git(clone, "ls-remote", "--heads", "origin", f"refs/heads/{release.branch}", auth=True).split()
+    # Against the commit just checked, so nothing pushed since is lost.
     lease = f"--force-with-lease=refs/heads/{release.branch}:{remote[0] if remote else ''}"
     git(clone, "push", "--quiet", lease, "origin", f"HEAD:refs/heads/{release.branch}", auth=True)
-    url = run(["gh", "pr", "create", "--repo", repo, "--base", base, "--head", release.branch,
+    out = run(["gh", "pr", "create", "--repo", repo, "--base", base, "--head", release.branch,
                "--title", release.title, "--body-file", "-"], stdin=body(release, changed)).strip()
-    return Result(repo, "opened", count_files(changed), url.splitlines()[-1] if url else "")
+    url = out.splitlines()[-1] if out else ""
+    result = Result(repo, "opened", detail(count_files(changed)), url)
+    try:
+        closed = close_superseded(repo, release, url)
+    except Failure as e:
+        result.failed = True
+        result.detail = detail(count_files(changed), f"but closing the older fan-out PRs failed: {e}")
+        return result
+    if closed:
+        result.detail = detail(count_files(changed), f"closed {', '.join(closed)} as superseded")
+    return result
 
 
 def count_files(changed: list[str]) -> str:
@@ -398,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     except Failure as e:
         print(e, file=sys.stderr)
         return 2
-    release = Release(args.tag, sha, canonical, author)
+    release = Release(args.tag, sha, canonical, author, args.app_slug or "")
 
     results = []
     work = Path(tempfile.mkdtemp(prefix="fan-out-"))
@@ -408,6 +579,8 @@ def main(argv: list[str] | None = None) -> int:
                 result = move(repo, release, work, args.dry_run)
             except Failure as e:
                 result = Result(repo, "failed", str(e), failed=True)
+            except Exception as e:  # noqa: BLE001 - one repository's surprise mustn't stop the rest
+                result = Result(repo, "failed", f"unexpected {type(e).__name__}: {e}", failed=True)
             results.append(result)
             print(f"{result.repo}: {result.status}" + (f" {result.url}" if result.url else "")
                   + (f" ({result.detail})" if result.detail else ""),
