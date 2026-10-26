@@ -29,9 +29,13 @@ policy.
   targets `board`, `board-check`, `protect`, `protect-check`, `envs`, `envs-check`
   and `new-repo-check`, and the scripts behind them (`protect-repo.sh`,
   `board-sync.sh`, `release-envs.sh`, `new-repo-check.sh`), whether run by path,
-  through a shell or with `source`. Reading or linting those scripts passes. Every
-  repository takes the same guard, so a target of one of those names is blocked in
-  any repository; name a repository's own targets differently. The tables in
+  through a shell or with `source`. Reading or linting those scripts passes, and so
+  do the dry runs `bash -n <script>` and `make -n <target>`. Every repository takes
+  the same guard, so a target of one of those names is blocked in any repository;
+  name a repository's own targets differently. Known gaps, as for any command the
+  guard can't see into: a script fed to a shell on stdin (`bash < script`,
+  `cat script | bash`), a target name that reaches make at run time (`echo board |
+  xargs make`, `t=board; make $t`), and a program that runs make or a script itself. The tables in
   `guard.py` have the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
   including any `gh pr merge`), re-running a workflow run, acting on a repository

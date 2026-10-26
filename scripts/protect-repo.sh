@@ -79,8 +79,9 @@
 # CodeQL as they are.
 #
 # --check reads each repository's settings and prints what differs from the list,
-# changing nothing; it exits 1 on any difference. It also reports every ruleset on the
-# repository, listed here or not, whose enforcement isn't `active`. Where code_owners is on, it also
+# changing nothing; it exits 1 on any difference. It also reports every ruleset of the
+# repository's own, listed here or not, whose enforcement isn't `active`. The
+# organisation's rulesets aren't read: an apply here can't change them. Where code_owners is on, it also
 # reads .github/CODEOWNERS, which must have a catch-all `*` rule naming the
 # maintainer. What can't be read without admin rights is printed as "not checked",
 # so --check is only complete with an admin login, and it warns when it isn't.
@@ -324,7 +325,7 @@ api() {
   fi
   for a in "$@"; do
     case "$a" in
-      -X|GET|POST|PUT|PATCH|DELETE|repos/*|users/*) what+="${what:+ }$a" ;;
+      -X|GET|POST|PUT|PATCH|DELETE|repos/*|users/*) what+="${what:+ }${a%%\?*}" ;;
     esac
   done
   msg=$(jq -rs '[.[] | objects | (.message // empty), (.errors[]?
@@ -341,7 +342,9 @@ read_or() {
 }
 # GitHub returns lists 30 to a page, and gh --paginate prints each page's JSON in
 # turn, so these join the pages before anything looks for a name in them.
-rulesets() { api --paginate "repos/$repo/rulesets" | jq -cs 'add // []'; }
+# Only the repository's own rulesets: GitHub includes the organisation's by default
+# (includes_parents), which this script neither sets nor can fix from here.
+rulesets() { api --paginate "repos/$repo/rulesets?includes_parents=false" | jq -cs 'add // []'; }
 branch_policies() {
   api --paginate "repos/$repo/environments/release/deployment-branch-policies" |
     jq -cs '{branch_policies: (map(.branch_policies // []) | add // [])}'

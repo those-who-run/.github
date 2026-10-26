@@ -113,9 +113,11 @@ protect:
 envs-check:
 	@bash scripts/release-envs.sh --check
 
-# CLIENT_ID and PEM reach the script through its environment (make exports variables
-# set on its command line), never on a command line or in make's output, and no
-# message names either value.
+# `make envs CLIENT_ID=... PEM=...` puts the Client ID and the key file's path on make's
+# own command line (and in MAKEFLAGS), where ps and the shell's history see them;
+# neither is a secret. make exports them to the script's environment, and the recipes
+# don't echo them. Inside the script the values reach gh only on stdin, and no
+# message names either value. The key file's contents are never on any command line.
 envs:
 	@test -n "$$CLIENT_ID" || { echo "make envs needs CLIENT_ID=<the release App's Client ID>" >&2; exit 2; }
 	@test -n "$$PEM" || { echo "make envs needs PEM=<the release App's private key file>" >&2; exit 2; }

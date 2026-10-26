@@ -854,7 +854,26 @@ MAKE_WITH_VALUE = {
 }  # fmt: skip
 
 
+# make's dry runs print the recipes without running them.
+MAKE_DRY_RUN = {"-n", "--just-print", "--dry-run", "--recon"}
+# make's short options that take a value, which end a cluster such as `-nC`.
+MAKE_SHORT_WITH_VALUE = "CfIoWEjl"
+
+
+def make_dry_run(args: list[str]) -> bool:
+    for a in args:
+        if a == "--":
+            return False
+        if a in MAKE_DRY_RUN:
+            return True
+        if "n" in short_flags(a, MAKE_SHORT_WITH_VALUE) and a[1:].isalpha():
+            return True
+    return False
+
+
 def make_rule(args: list[str], env: dict[str, str]) -> Verdict:
+    if make_dry_run(args):
+        return ALLOWED
     i = 0
     while i < len(args):
         a = args[i]
@@ -1380,17 +1399,20 @@ def check_env(
 def check_shell(args: list[str], cmd: Command, text: str, depth: int) -> Verdict:
     """`bash -c '...'` checks the script; `bash <<EOF` checks the here-document; a
     shell reading stdin from a pipe can't be followed."""
-    has_c, i = False, 0
+    has_c, noexec, i = False, False, 0
     while i < len(args):
         a = args[i]
         if a == "--":
             i += 1
             break
         if a in ("-o", "+o", "-O", "+O"):
+            noexec = noexec or (a == "-o" and args[i + 1 : i + 2] == ["noexec"])
             i += 2
             continue
         if a.startswith("-") and not a.startswith("--") and "c" in a[1:]:
             has_c = True
+        if a.startswith("-") and not a.startswith("--") and "n" in a[1:]:
+            noexec = True
         if not a.startswith(("-", "+")):
             break
         i += 1
@@ -1398,7 +1420,8 @@ def check_shell(args: list[str], cmd: Command, text: str, depth: int) -> Verdict
         return check(args[i], depth + 1) if i < len(args) else ALLOWED
     if i < len(args):
         # A script file: what it runs is out of sight, but which script it is isn't.
-        return maintainer_script(args[i])
+        # `bash -n` only reads it for its syntax.
+        return ALLOWED if noexec else maintainer_script(args[i])
     if cmd.stdin_scripts:
         return worst([check(s, depth + 1) for s in cmd.stdin_scripts])
     return ask_if_sensitive(text, "a shell reads commands from a pipe")

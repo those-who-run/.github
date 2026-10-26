@@ -15,7 +15,12 @@
 # workflow every repository calls to release, reads that file, so a repository that
 # calls it has one, and one without it can't release. Naming repositories limits the
 # run to them, and takes them whether or not they are in the list or have the file
-# yet (a new repository).
+# yet (a new repository). Only a 404 for the file means "doesn't release": any other
+# failed read stops the run with exit 2, and so does a list in which nothing releases.
+#
+# Without --check, a repository's setup stops at the first write GitHub refuses, and
+# the variable and the secret are written only after the environment has been read
+# back with custom_branch_policies true and main as its only branch policy.
 #
 # What a repository needs:
 #   - an environment named release-please, deployments from custom branch policies
@@ -31,12 +36,17 @@
 #
 # Without --check it creates or updates the environment, its branch policy, the
 # variable and the secret in each repository, then checks them. The Client ID and the
-# key file's path come from the environment variables CLIENT_ID and PEM (`make envs
-# CLIENT_ID=... PEM=...`), so neither is on a command line or printed; both go to gh
-# on stdin. A repository-level copy of the key is reported, not deleted: delete it with
-# `gh secret delete RELEASE_APP_PRIVATE_KEY --repo <owner/repo>`. Every repository
-# takes the same key here; the App's settings can generate one per repository, and
-# naming one repository sets up only that one.
+# key file's path come from the environment variables CLIENT_ID and PEM. `make envs
+# CLIENT_ID=... PEM=...` puts both on make's own command line (and in MAKEFLAGS),
+# where ps and the shell's history see them; neither is a secret, the path being only
+# a path. Inside this script they reach gh only on stdin, never in its arguments, and
+# no message prints either. The key file's contents are never held in a variable.
+#
+# A repository-level copy of the key is reported, not deleted: delete it with
+# `gh secret delete RELEASE_APP_PRIVATE_KEY --repo <owner/repo>`. Every releasing
+# repository shares one key of the App (.github/workflows/README.md, "The repository's
+# settings", says why and how to rotate it); naming one repository sets up that one
+# alone, such as a new repository.
 #
 # Needs: gh and jq.
 set -euo pipefail
@@ -87,14 +97,19 @@ if [ ${#named[@]} -gt 0 ]; then
 else
   mapfile -t candidates <<<"$listed"
 fi
+# Only GitHub's 404 means the file isn't there. Any other failure (no access, an expired
+# login, a rate limit, the network) stops the run: taking it for "doesn't release"
+# would skip the repository and report success having looked at nothing.
 for r in ${candidates[@]+"${candidates[@]}"}; do
-  if gh api "repos/$r/contents/release-please-config.json" >/dev/null 2>&1; then
+  if err=$(gh api "repos/$r/contents/release-please-config.json" 2>&1 >/dev/null); then
     repos+=("$r")
-  else
+  elif grep -q '(HTTP 404)' <<<"$err"; then
     echo "$r: no release-please-config.json on the default branch, so it doesn't release; skipped"
+  else
+    fail "$r: can't tell whether it releases: reading release-please-config.json failed (${err//$'\n'/ }); check the gh login (gh auth status) and try again"
   fi
 done
-[ ${#repos[@]} -gt 0 ] || { echo "no repository to look at"; exit 0; }
+[ ${#repos[@]} -gt 0 ] || fail "no repository to look at: none in $list has a release-please-config.json"
 
 # Names only: every list is reduced to its names before anything is printed.
 names() { jq -r "[$1] | sort | if length == 0 then \"none\" else join(\", \") end"; }
@@ -145,8 +160,17 @@ check_repo() {
 
 refused=0
 setup_repo() {
-  local pol
-  step() { echo "$repo: not set up: GitHub refused $1 (its message is above)" >&2; refused=$((refused + 1)); }
+  local pol env
+  # Any failure stops the setup of this repository where it is: nothing after it,
+  # least of all the key, is written.
+  step() {
+    echo "$repo: not set up: GitHub refused $1 (its message is above); the variable and the secret were not written" >&2
+    refused=$((refused + 1))
+  }
+  unsafe() {
+    echo "$repo: not set up: read back after the writes, the environment is not safe for the key: $1; the variable and the secret were not written" >&2
+    refused=$((refused + 1))
+  }
   # No reviewers and no wait: release-please runs on every push to main.
   jq -n '{wait_timer: 0, reviewers: [], deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}' |
     gh api -X PUT "repos/$repo/environments/$ENV_NAME" --input - >/dev/null || { step "the environment"; return 0; }
@@ -154,17 +178,43 @@ setup_repo() {
     jq -cs 'map(.branch_policies // []) | add // []') || { step "a read of the branch policies"; return 0; }
   if ! jq -e 'any(.[]; .name == "main" and (.type // "branch") == "branch")' >/dev/null <<<"$pol"; then
     gh api -X POST "repos/$repo/environments/$ENV_NAME/deployment-branch-policies" \
-      -f name=main -f type=branch >/dev/null || step "the main branch policy"
+      -f name=main -f type=branch >/dev/null || { step "the main branch policy"; return 0; }
   fi
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     gh api -X DELETE "repos/$repo/environments/$ENV_NAME/deployment-branch-policies/$id" >/dev/null ||
-      step "the removal of a branch policy other than main"
+      { step "the removal of a branch policy other than main"; return 0; }
   done < <(jq -r '.[] | select((.name == "main" and (.type // "branch") == "branch") | not) | .id' <<<"$pol")
-  # Values on stdin, so neither is on a command line or in gh's output.
-  printf '%s' "$CLIENT_ID" | gh variable set "$VARIABLE" --env "$ENV_NAME" --repo "$repo" >/dev/null ||
+  # The key goes only into an environment that deploys from main alone: read it back
+  # and stop for this repository, before either value is written, unless it does.
+  if ! env=$(gh api "repos/$repo/environments/$ENV_NAME"); then
+    step "a read of the environment"
+    return 0
+  fi
+  if [ "$(jq -r '.deployment_branch_policy.custom_branch_policies // false' <<<"$env")" != true ]; then
+    unsafe "custom_branch_policies isn't true"
+    return 0
+  fi
+  if ! pol=$(gh api --paginate "repos/$repo/environments/$ENV_NAME/deployment-branch-policies" |
+       jq -cs 'map(.branch_policies // []) | add // []'); then
+    step "a read of the branch policies"
+    return 0
+  fi
+  if ! jq -e 'map("\(.name):\(.type // "branch")") == ["main:branch"]' >/dev/null <<<"$pol"; then
+    unsafe "its branch policies aren't main alone"
+    return 0
+  fi
+  # Inside this script the values reach gh only on stdin, never in its arguments or
+  # its output.
+  if ! printf '%s' "$CLIENT_ID" | gh variable set "$VARIABLE" --env "$ENV_NAME" --repo "$repo" >/dev/null; then
     step "the variable $VARIABLE"
-  gh secret set "$SECRET" --env "$ENV_NAME" --repo "$repo" <"$PEM" >/dev/null || step "the secret $SECRET"
+    return 0
+  fi
+  if ! gh secret set "$SECRET" --env "$ENV_NAME" --repo "$repo" <"$PEM" >/dev/null; then
+    echo "$repo: not set up: GitHub refused the secret $SECRET (its message is above)" >&2
+    refused=$((refused + 1))
+    return 0
+  fi
   echo "$repo: $ENV_NAME environment set up"
 }
 
@@ -173,7 +223,7 @@ for repo in "${repos[@]}"; do
   check_repo
 done
 if [ "$refused" -gt 0 ]; then
-  echo "failed: GitHub refused $refused step(s); the messages are above" >&2
+  echo "failed: the setup stopped in $refused repository(s); the messages are above" >&2
   exit 1
 fi
 if [ "$problems" -gt 0 ]; then

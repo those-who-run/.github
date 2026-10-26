@@ -7,18 +7,21 @@
 # Run by the maintainer, with his own gh login (it needs the `project` scope). Never by
 # an agent: it changes the organisation's project board.
 #
-#   scripts/board-sync.sh [--dry-run] [--owner ORG] [--project N]
+#   scripts/board-sync.sh [--dry-run] [--owner ORG] [--project N] [--field NAME]
 #
 # Each issue card's Status follows its issue:
 #   closed                            -> Done
 #   open, with the label needs triage -> Needs triage
 #   any other open issue              -> Ready
-# except that a card In progress or In review stays where it is unless its issue is
-# closed: only Done overrides them, as the work on it is under way. A card already in
-# the right column is left alone, and so are pull requests and draft issues.
+# except that a card in any column other than those three (In progress, In review, or
+# one added later) stays where it is unless its issue is closed: only Done overrides
+# them, as the work on it is under way. A card with no Status yet is set. A card
+# already in the right column is left alone, and so are pull requests and draft issues.
 #
-# The Status field and its options are looked up by name on every run, never by ID:
-# the option IDs change when someone recreates the options. The issues' state and
+# The Status field (--field, Status by default) and its options are looked up by name
+# on every run, never by ID: the option IDs change when someone recreates the options.
+# All five options must exist (Needs triage, Ready, In progress, In review, Done), so a
+# renamed column stops the run rather than letting its cards be moved. The issues' state and
 # labels are read in bulk, one `gh issue list` per repository on the board.
 #
 # --dry-run prints the moves it would make and changes nothing. Either way it prints
@@ -32,8 +35,9 @@ set -euo pipefail
 owner=those-who-run
 project=2
 dry_run=false
+FIELD="Status"
 usage() {
-  echo "usage: board-sync.sh [--dry-run] [--owner ORG] [--project N]" >&2
+  echo "usage: board-sync.sh [--dry-run] [--owner ORG] [--project N] [--field NAME]" >&2
   exit 2
 }
 fail() { echo "$*" >&2; exit 2; }
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=true; shift ;;
     --owner) [ $# -ge 2 ] || usage; owner=$2; shift 2 ;;
     --project) [ $# -ge 2 ] || usage; project=$2; shift 2 ;;
+    --field) [ $# -ge 2 ] && [ -n "$2" ] || usage; FIELD=$2; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
@@ -50,16 +55,21 @@ case "$project" in
   ''|*[!0-9]*) fail "--project takes the project's number: $project" ;;
 esac
 
-FIELD="Status"
 DONE="Done"
 TRIAGE="Needs triage"
 READY="Ready"
-# The columns only Done may move a card out of.
-KEEP='["In progress", "In review"]'
+# The columns the board has besides those three, which the script never sets. Each
+# must exist, so a rename shows here and not as cards moved out of it.
+IN_PROGRESS="In progress"
+IN_REVIEW="In review"
 TRIAGE_LABEL="needs triage"
 # gh's lists stop at --limit; a list that reaches it may be cut short, so the run
-# stops rather than miss cards or issues.
-ITEM_LIMIT=5000
+# stops rather than miss cards or issues. BOARD_ITEM_LIMIT lowers the card limit, for
+# the tests.
+ITEM_LIMIT=${BOARD_ITEM_LIMIT:-5000}
+case "$ITEM_LIMIT" in
+  ''|*[!0-9]*|0) fail "BOARD_ITEM_LIMIT takes a number above 0: $ITEM_LIMIT" ;;
+esac
 ISSUE_LIMIT=5000
 
 # The project's node ID and the Status field, by name.
@@ -71,7 +81,7 @@ field=$(jq -c --arg f "$FIELD" '[.fields[] | select(.name == $f)] | if length ==
 [ -n "$field" ] || fail "project $project has no single field named $FIELD"
 [ "$(jq -r '.options | type' <<<"$field")" = array ] || fail "$FIELD is not a single-select field"
 field_id=$(jq -r .id <<<"$field")
-for name in "$DONE" "$TRIAGE" "$READY"; do
+for name in "$TRIAGE" "$READY" "$IN_PROGRESS" "$IN_REVIEW" "$DONE"; do
   jq -e --arg n "$name" '[.options[] | select(.name == $n)] | length == 1' >/dev/null <<<"$field" ||
     fail "$FIELD has no option named \"$name\" (it has: $(jq -r '[.options[].name] | join(", ")' <<<"$field"))"
 done
@@ -84,8 +94,9 @@ total=$(jq '.totalCount // (.items | length)' <<<"$items")
   fail "project $project has $total cards, more than the $ITEM_LIMIT read: raise ITEM_LIMIT"
 
 # The issue cards: item ID, repository, number and current Status ("" for none). gh
-# names a field's value after the field, in lower case.
-key=$(tr '[:upper:]' '[:lower:]' <<<"$FIELD")
+# names a field's value after the field with only its first letter lower-cased (its
+# camelCase), so "Status" is "status" and "Board Status" is "board Status".
+key=$(jq -rn --arg f "$FIELD" '"\($f[0:1] | ascii_downcase)\($f[1:])"')
 cards=$(jq -c --arg k "$key" '[.items[] | select(.content.type == "Issue")
   | {id, repo: .content.repository, number: .content.number, status: (.[$k] // "")}]' <<<"$items")
 others=$(jq '[.items[] | select(.content.type != "Issue")] | length' <<<"$items")
@@ -104,15 +115,17 @@ while IFS= read -r repo; do
 done < <(jq -r '[.[].repo] | unique[]' <<<"$cards")
 
 # The plan: each card with the column it belongs in, and what to do about it.
-plan=$(jq -c --argjson issues "$issues" --argjson keep "$KEEP" \
-  --arg done_ "$DONE" --arg triage "$TRIAGE" --arg ready "$READY" '
+# Only a card in one of the three columns the script sets, or with no Status, moves to
+# another of them; any other column moves only to Done.
+plan=$(jq -c --arg done_ "$DONE" --arg triage "$TRIAGE" --arg ready "$READY" '
   .[] | . as $c | $issues["\(.repo)#\(.number)"] as $i
   | if $i == null then $c + {action: "missing"}
     else ($c + {want: (if $i.state == "CLOSED" then $done_ elif $i.triage then $triage else $ready end)})
       | if .status == .want then . + {action: "right"}
-        elif (.status as $s | $keep | index($s)) and .want != $done_ then . + {action: "kept"}
+        elif .want != $done_ and (.status | IN($done_, $triage, $ready, "") | not)
+          then . + {action: "kept"}
         else . + {action: "move"} end
-    end' <<<"$cards")
+    end' --argjson issues "$issues" <<<"$cards")
 
 moved=0 right=0 kept=0 missing=0 refused=0
 verb=$([ "$dry_run" = true ] && echo "would move" || echo "moved")
@@ -140,5 +153,5 @@ while IFS= read -r card; do
   esac
 done <<<"$plan"
 
-echo "$verb $moved, already right $right, kept in progress or review $kept, not found $missing, refused $refused; $others cards that aren't issues left alone"
+echo "$verb $moved, already right $right, kept in progress, review or another column $kept, not found $missing, refused $refused; $others cards that aren't issues left alone"
 [ "$missing" -eq 0 ] && [ "$refused" -eq 0 ] || exit 1
