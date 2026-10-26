@@ -35,7 +35,13 @@ policy.
   name a repository's own targets differently. Known gaps, as for any command the
   guard can't see into: a script fed to a shell on stdin (`bash < script`,
   `cat script | bash`), a target name that reaches make at run time (`echo board |
-  xargs make`, `t=board; make $t`), and a program that runs make or a script itself. The tables in
+  xargs make`, `t=board; make $t`), make running a command of its own
+  (`make -E '$(shell ...)'`, `make --eval ...`), and a program that runs make or a
+  script itself. `make -n` still runs a recipe line that starts with `+` or uses
+  `$(MAKE)`, and every `$(shell ...)` the Makefile expands; the maintainer targets
+  use none of these today, so their dry run runs nothing. `gh project item-edit`,
+  the write `make board` makes, isn't blocked: the bot account's token can't write
+  to the organisation's projects, so an agent running as the bot can't make it. The tables in
   `guard.py` have the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
   including any `gh pr merge`), re-running a workflow run, acting on a repository

@@ -464,6 +464,11 @@ MAINTAINER_ONLY = [
     ("make -C .github envs", "make -C .github --just-print envs"),
     ("make -k envs-check", "make -nk envs-check"),
     ("make -- -n board", "make --recon board"),
+    # The last setting counts: `+n` and `+o noexec` turn the dry run off again.
+    ("bash -n +n scripts/release-envs.sh", "bash +n -n scripts/release-envs.sh"),
+    ("sh -n +n scripts/board-sync.sh", "sh -x -n scripts/board-sync.sh"),
+    ("bash -n +o noexec scripts/protect-repo.sh", "bash +o noexec -n scripts/protect-repo.sh"),
+    ("bash -o noexec +o noexec scripts/new-repo-check.sh", "bash +n -o noexec scripts/new-repo-check.sh"),
 ]
 
 

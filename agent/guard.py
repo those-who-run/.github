@@ -1405,14 +1405,17 @@ def check_shell(args: list[str], cmd: Command, text: str, depth: int) -> Verdict
         if a == "--":
             i += 1
             break
+        # noexec follows the last setting: `-n` and `-o noexec` set it, `+n` and
+        # `+o noexec` clear it, so `bash -n +n script` runs the script.
         if a in ("-o", "+o", "-O", "+O"):
-            noexec = noexec or (a == "-o" and args[i + 1 : i + 2] == ["noexec"])
+            if a in ("-o", "+o") and args[i + 1 : i + 2] == ["noexec"]:
+                noexec = a == "-o"
             i += 2
             continue
         if a.startswith("-") and not a.startswith("--") and "c" in a[1:]:
             has_c = True
-        if a.startswith("-") and not a.startswith("--") and "n" in a[1:]:
-            noexec = True
+        if a[:1] in ("-", "+") and a[1:2] != a[:1] and "n" in a[1:]:
+            noexec = a[0] == "-"
         if not a.startswith(("-", "+")):
             break
         i += 1

@@ -91,7 +91,7 @@ items=$(gh project item-list "$project" --owner "$owner" --format json --limit "
   fail "can't read the cards of project $project"
 total=$(jq '.totalCount // (.items | length)' <<<"$items")
 [ "$(jq '.items | length' <<<"$items")" -ge "$total" ] ||
-  fail "project $project has $total cards, more than the $ITEM_LIMIT read: raise ITEM_LIMIT"
+  fail "project $project has $total cards, more than the $ITEM_LIMIT read: raise BOARD_ITEM_LIMIT"
 
 # The issue cards: item ID, repository, number and current Status ("" for none). gh
 # names a field's value after the field with only its first letter lower-cased (its
