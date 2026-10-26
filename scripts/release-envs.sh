@@ -15,8 +15,11 @@
 # workflow every repository calls to release, reads that file, so a repository that
 # calls it has one, and one without it can't release. Naming repositories limits the
 # run to them, and takes them whether or not they are in the list or have the file
-# yet (a new repository). Only a 404 for the file means "doesn't release": any other
-# failed read stops the run with exit 2, and so does a list in which nothing releases.
+# yet (a new repository). Each listed repository is read first, and any failure there
+# (a 404 included: deleted, or not visible to this login; GitHub redirects a renamed
+# repository) stops the run with exit 2. Then
+# only a 404 for the file means "doesn't release": any other failed read stops the run
+# with exit 2, and so does a list in which nothing releases.
 #
 # Without --check, a repository's setup stops at the first write GitHub refuses, and
 # the variable and the secret are written only after the environment has been read
@@ -32,7 +35,9 @@
 #
 # --check prints, for each repository, custom_branch_policies, the branch policy names,
 # the environment's secret and variable names and the repository's secret names, then
-# a line for each problem; it exits 1 on any problem. It never prints a value.
+# a line for each problem; it exits 1 on any problem. It also prints when the key secret
+# was last updated, so a rotation can be confirmed across repositories. It never prints
+# a value.
 #
 # Without --check it creates or updates the environment, its branch policy, the
 # variable and the secret in each repository, then checks them. The Client ID and the
@@ -101,6 +106,11 @@ fi
 # login, a rate limit, the network) stops the run: taking it for "doesn't release"
 # would skip the repository and report success having looked at nothing.
 for r in ${candidates[@]+"${candidates[@]}"}; do
+  # The repository itself first: a 404 here is a deleted repository, or one this login
+  # can't see (GitHub redirects a renamed one), never one that doesn't release.
+  if ! err=$(gh api "repos/$r" 2>&1 >/dev/null); then
+    fail "$r: can't read the repository (${err//$'\n'/ }): deleted, or not visible to this login? Fix scripts/repos.json or the gh login (gh auth status)"
+  fi
   if err=$(gh api "repos/$r/contents/release-please-config.json" 2>&1 >/dev/null); then
     repos+=("$r")
   elif grep -q '(HTTP 404)' <<<"$err"; then
@@ -143,6 +153,9 @@ check_repo() {
   fi
   if secrets=$(all "repos/$repo/environments/$ENV_NAME/secrets" secrets); then
     echo "$repo: environment secrets: $(names '.[].name' <<<"$secrets")"
+    # When the key was last stored, so a rotation can be seen to reach every repository.
+    jq -r --arg s "$SECRET" '.[] | select(.name == $s) | "\(.name) updated \(.updated_at // "at an unknown time")"' <<<"$secrets" |
+      while IFS= read -r line; do echo "$repo: $line"; done
     jq -e --arg s "$SECRET" 'any(.[]; .name == $s)' >/dev/null <<<"$secrets" ||
       problem "no environment secret $SECRET"
   else

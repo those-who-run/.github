@@ -29,14 +29,26 @@ policy.
   targets `board`, `board-check`, `protect`, `protect-check`, `envs`, `envs-check`
   and `new-repo-check`, and the scripts behind them (`protect-repo.sh`,
   `board-sync.sh`, `release-envs.sh`, `new-repo-check.sh`), whether run by path,
-  through a shell or with `source`. Reading or linting those scripts passes, and so
-  do the dry runs `bash -n <script>` and `make -n <target>`. Every repository takes
+  through a shell or with `source`. Reading or linting those scripts passes. Two dry
+  runs pass, and only in exactly these forms: `bash -n <script>` (or `sh -n`, `dash
+  -n`, `zsh -n`) and `make -n <target>`. A shell given one of the scripts anywhere in
+  its arguments is otherwise blocked, whatever its options, since an option that takes
+  a value (`-eo pipefail`, `+xo noexec`) moves where the script really is; so is any
+  other make command naming a target. Longer dry runs such as `bash -nx <script>`,
+  `make -nk <target>` or `make --dry-run <target>` are blocked too. Every repository takes
   the same guard, so a target of one of those names is blocked in any repository;
   name a repository's own targets differently. Known gaps, as for any command the
   guard can't see into: a script fed to a shell on stdin (`bash < script`,
   `cat script | bash`), a target name that reaches make at run time (`echo board |
-  xargs make`, `t=board; make $t`), and a program that runs make or a script itself. The tables in
-  `guard.py` have the full list.
+  xargs make`, `t=board; make $t`), make running a command of its own
+  (`make -E '$(shell ...)'`, `make --eval ...`), and a program that runs make or a
+  script itself. `make -n` still runs a recipe line that starts with `+` or uses
+  `$(MAKE)`, and every `$(shell ...)` the Makefile expands; the maintainer targets
+  use none of these today, so their dry run runs nothing. `gh project item-edit`,
+  the write `make board` makes, isn't blocked. That is safe only because agents run
+  as the bot account (the identity hook enforces it) and the bot's token can't write
+  to the organisation's projects; an agent with the maintainer's login could. The
+  tables in `guard.py` have the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
   including any `gh pr merge`), re-running a workflow run, acting on a repository
   outside the organisation, and any command it can't follow that names `git`, `gh`,

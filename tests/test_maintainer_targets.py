@@ -113,6 +113,8 @@ if args[:1] in (["variable"], ["secret"]) and args[1] == "set":
     call["stdin"] = value
     store = state["envs"][repo]["variables" if args[0] == "variable" else "secrets"]
     store[args[2]] = value
+    if args[0] == "secret":
+        state["envs"][repo].setdefault("updated", {})[args[2]] = "2026-10-26T12:00:00Z"
     done()
 
 assert args[0] == "api", args
@@ -142,6 +144,11 @@ if m:
     if "Accept: application/vnd.github.v3.repository+json" in headers:
         done({"full_name": m[3], "permissions": perms})
     done()
+m = re.fullmatch(r"repos/([^/]+/[^/]+)", path)
+if m:
+    # Every repository exists unless the test says it is gone.
+    gone = m[1] in state.get("gone", [])
+    done(None if gone else {"full_name": m[1]}, 404 if gone else 0)
 m = re.fullmatch(r"repos/([^/]+/[^/]+)/(.*)", path)
 if not m:
     unhandled()
@@ -191,7 +198,10 @@ if m:
         done({"total_count": len(e["variables"]),
               "variables": [{"name": k, "value": v} for k, v in e["variables"].items()]})
     if sub == "/secrets":
-        done({"total_count": len(e["secrets"]), "secrets": [{"name": k} for k in e["secrets"]]})
+        updated = e.get("updated", {})
+        done({"total_count": len(e["secrets"]),
+              "secrets": [{"name": k, "created_at": "2026-01-01T00:00:00Z",
+                           "updated_at": updated.get(k, "2026-01-01T00:00:00Z")} for k in e["secrets"]]})
 unhandled()
 '''
 
@@ -446,7 +456,7 @@ class BoardSync(Targets):
     def test_more_cards_than_the_limit_moves_nothing(self):
         run = self.make("board", env={"BOARD_ITEM_LIMIT": "4"})
         self.assertEqual(run.code, 2, run.out + run.err)
-        self.assertIn("has 10 cards, more than the 4 read", run.err)
+        self.assertIn("has 10 cards, more than the 4 read: raise BOARD_ITEM_LIMIT", run.err)
         self.assertEqual(run.writes, [])
         self.assertEqual(self.make("board", env={"BOARD_ITEM_LIMIT": "10"}).code, 0)
 
@@ -620,6 +630,32 @@ class ReleaseEnvs(Targets):
                 self.assertIn("Bad credentials", run.err)
                 self.assertNotIn("set up", run.out)
                 self.assertEqual([c for c in run.writes if not c.get("failed")], [])
+
+    def test_envs_check_shows_when_each_key_was_stored(self):
+        for repo in self.releasing:
+            self.state["envs"][repo] = ready_env()
+        run = self.make("envs-check")
+        self.assertEqual(run.code, 0, run.out)
+        for repo in self.releasing:
+            self.assertIn(f"{repo}: RELEASE_APP_PRIVATE_KEY updated 2026-01-01T00:00:00Z", run.out)
+        # After a rotation, every repository shows the new time.
+        rotated = self.make("envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}")
+        self.assertEqual(rotated.code, 0, rotated.out + rotated.err)
+        for repo in self.releasing:
+            self.assertIn(f"{repo}: RELEASE_APP_PRIVATE_KEY updated 2026-10-26T12:00:00Z", rotated.out)
+        self.assert_no_values(rotated)
+
+    def test_a_listed_repository_that_cannot_be_read_stops_the_run(self):
+        # A 404 for the repository itself is deleted or not visible to this login, never
+        # "doesn't release".
+        self.state["gone"] = [f"{ORG}/radio"]
+        for target in (["envs-check"], ["envs", "CLIENT_ID=Iv23liVeRyNewClientId", f"PEM={self.pem}"]):
+            with self.subTest(target=target[0]):
+                run = self.make(*target)
+                self.assertEqual(run.code, 2, run.out + run.err)
+                self.assertIn(f"{ORG}/radio: can't read the repository", run.err)
+                self.assertNotIn(f"{ORG}/radio: no release-please-config.json", run.out)
+                self.assertEqual(run.writes, [])
 
     def test_no_releasing_repository_fails(self):
         self.state["files"] = {}
