@@ -239,6 +239,14 @@ class FanOut(unittest.TestCase):
         self.assertNotIn(OLD_SHA, ci)
         self.assertIn(f"checks.yml@{NEW}\n", self.on_branch("ecu", ".github/workflows/bare.yml"))
 
+    def test_line_endings_are_kept(self):
+        self.remote("ecu", {"renovate.json": RENOVATE.replace("\n", "\r\n").encode()})
+        self.assertEqual(self.run_fan_out().returncode, 0)
+        bare = self.tmp / "remotes" / ORG / "ecu.git"
+        raw = subprocess.run(["git", "show", f"{BRANCH}:renovate.json"], cwd=bare,
+                             check=True, capture_output=True, env={**os.environ, **GIT_ENV}).stdout
+        self.assertEqual(raw, RENOVATE.replace(OLD, NEW).replace("\n", "\r\n").encode())
+
     def test_renovate_preset(self):
         self.remote("paddock", {"renovate.json": RENOVATE})
         done = self.run_fan_out()

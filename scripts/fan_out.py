@@ -151,15 +151,21 @@ def text_files(repo: Path) -> list[Path]:
     return files
 
 
+def read(path: Path) -> str:
+    # Bytes decoded, not read_text: that turns CRLF into LF, and the rewrite would
+    # then change every line of a CRLF file.
+    return path.read_bytes().decode("utf-8")
+
+
 def plan(repo: Path, sha: str, tag: str, canonical: dict[str, bytes]) -> tuple[dict[Path, bytes], str | None]:
     """The files to change and their new contents, or why the repository is left
     alone (it already names a later release)."""
     changes: dict[Path, bytes] = {}
-    newest = max((v for p in text_files(repo) for v in referenced_versions(p.read_text(encoding="utf-8"))), default=None)
+    newest = max((v for p in text_files(repo) for v in referenced_versions(read(p))), default=None)
     if newest is not None and newest > version(tag):
         return {}, "already on v%d.%d.%d, later than %s" % (*newest, tag)
     for path in text_files(repo):
-        old = path.read_text(encoding="utf-8")
+        old = read(path)
         new = rewrite_pins(old, sha, tag)
         if path.name in RENOVATE_FILES:
             new = rewrite_preset(new, tag)
