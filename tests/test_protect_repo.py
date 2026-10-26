@@ -116,7 +116,8 @@ if rest == "":
     done({})
 if rest == "/rulesets":
     if method == "GET":
-        done_pages([{"id": x["id"], "name": x["name"], "target": x["target"]} for x in r["_rulesets"]])
+        done_pages([{"id": x["id"], "name": x["name"], "target": x["target"],
+                     "enforcement": x["enforcement"]} for x in r["_rulesets"]])
     r["_rulesets"].append(dict(body, id=next_id()))
     done({})
 m = re.fullmatch(r"/rulesets/(\d+)", rest)
@@ -824,6 +825,35 @@ class ProtectRepo(unittest.TestCase):
             "example/tool: drift: ruleset 'release tag creation': bypass:",
         ):
             self.assertIn(line, run.out)
+
+    def test_check_reports_a_ruleset_that_is_not_enforced(self):
+        # A disabled `main` once went unnoticed; so would one the list doesn't manage.
+        self.everything_listed()
+        self.run_script("--all")
+        tool = self.state["repos"]["example/tool"]
+        [r for r in tool["_rulesets"] if r["name"] == "main"][0]["enforcement"] = "disabled"
+        tool["_rulesets"].append({"id": 999, "name": "by hand", "target": "branch",
+                                  "enforcement": "evaluate", "conditions": {}, "rules": []})
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertEqual(run.writes, [])
+        self.assertIn("example/tool: drift: ruleset 'main' is not enforced: "
+                      "enforcement is disabled, want active", run.out)
+        self.assertIn("example/tool: drift: ruleset 'by hand' is not enforced: "
+                      "enforcement is evaluate, want active", run.out)
+        self.assertNotIn("example/home: drift", run.out)
+        # An apply makes `main` active again and leaves the one it doesn't manage, with
+        # a warning; the check after it still reports that one.
+        applied = self.run_script("--all")
+        self.assertEqual(applied.code, 0, applied.err)
+        self.assertNotIn("ruleset 'main' is not enforced", applied.out)
+        self.assertIn("example/tool: warning: ruleset 'by hand' is not enforced: enforcement is evaluate",
+                      applied.out)
+        self.assertEqual(self.ruleset("example/tool", "main")["enforcement"], "active")
+        after = self.run_script("--check", "--all")
+        self.assertEqual(after.code, 1)
+        self.assertNotIn("ruleset 'main' is not enforced", after.out)
+        self.assertIn("example/tool: drift: ruleset 'by hand' is not enforced", after.out)
 
     def test_check_reports_a_missing_codeowners_file(self):
         self.everything_listed()

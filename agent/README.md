@@ -24,8 +24,15 @@ policy.
   `gh pr merge --admin`, creating or changing releases, running or switching
   workflows, changing the repository's settings, secrets, variables and rulesets,
   printing the `gh` token or changing its login (`token`, `login`, `logout` and
-  `refresh` under `gh auth`), writes to a cluster or a registry, and reading a secret
-  from Bash. The docstring in `guard.py` has the full list.
+  `refresh` under `gh auth`), writes to a cluster or a registry, reading a secret
+  from Bash, and the maintainer's own jobs in `those-who-run/.github`: the make
+  targets `board`, `board-check`, `protect`, `protect-check`, `envs`, `envs-check`
+  and `new-repo-check`, and the scripts behind them (`protect-repo.sh`,
+  `board-sync.sh`, `release-envs.sh`, `new-repo-check.sh`), whether run by path,
+  through a shell or with `source`. Reading or linting those scripts passes. Every
+  repository takes the same guard, so a target of one of those names is blocked in
+  any repository; name a repository's own targets differently. The tables in
+  `guard.py` have the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
   including any `gh pr merge`), re-running a workflow run, acting on a repository
   outside the organisation, and any command it can't follow that names `git`, `gh`,

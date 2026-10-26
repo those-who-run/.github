@@ -833,6 +833,55 @@ def secret_args(name: str, args: list[str], env: dict[str, str]) -> Verdict:
     return worst([secret_path(a, env) for a in args])
 
 
+# The maintainer's own jobs in those-who-run/.github: the make targets in its Makefile's
+# "Maintainer only" group and the scripts behind them. They run with the gh login of
+# whoever runs them, change repository settings and the organisation's project board,
+# and one stores the release App's private key, so agents never run them, not even the
+# read-only checks. Reading or linting a script is fine; running it is not.
+MAINTAINER_ONLY = (
+    "it is the maintainer's own job, run with his gh login: it reads or changes "
+    "repository settings, the project board or the release App's key"
+)
+MAINTAINER_TARGETS = {
+    "board", "board-check", "protect", "protect-check", "envs", "envs-check", "new-repo-check",
+}  # fmt: skip
+MAINTAINER_SCRIPTS = {"protect-repo.sh", "board-sync.sh", "release-envs.sh", "new-repo-check.sh"}
+# make's options that take a separate value.
+MAKE_WITH_VALUE = {
+    "-C", "-f", "-I", "-o", "-W", "-E", "--directory", "--file", "--makefile",
+    "--include-dir", "--old-file", "--assume-old", "--new-file", "--assume-new", "--what-if",
+    "--eval",
+}  # fmt: skip
+
+
+def make_rule(args: list[str], env: dict[str, str]) -> Verdict:
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in MAKE_WITH_VALUE:
+            i += 2
+            continue
+        if not a.startswith("-") and not ASSIGNMENT.match(a) and a in MAINTAINER_TARGETS:
+            return block("maintainer-only", f"make {a}: {MAINTAINER_ONLY}")
+        i += 1
+    return ALLOWED
+
+
+def maintainer_script(path: str) -> Verdict:
+    """Running one of the maintainer's scripts, by its path or through a shell."""
+    name = os.path.basename(path)
+    if name in MAINTAINER_SCRIPTS:
+        return block("maintainer-only", f"{name}: {MAINTAINER_ONLY}")
+    return ALLOWED
+
+
+def script_rule(name: str):
+    def rule(args: list[str], env: dict[str, str]) -> Verdict:
+        return maintainer_script(name)
+
+    return rule
+
+
 # Program name -> rule. Programs are matched by their base name, so `/usr/bin/git`
 # is `git`.
 RULES = {
@@ -845,6 +894,9 @@ RULES = {
     "kubectl": kubectl_rule,
     "oc": kubectl_rule,
     "helm": helm_rule,
+    "make": make_rule,
+    "gmake": make_rule,
+    **{name: script_rule(name) for name in MAINTAINER_SCRIPTS},
 }
 
 
@@ -1238,6 +1290,8 @@ def check_argv(
         return ALLOWED
     if name == "eval":
         return check(" ".join(args), depth + 1)
+    if name in ("source", ".") and args:
+        return worst([secret_args(name, args, env), maintainer_script(args[0])])
     if name == "env":
         return check_env(args, env, cmd, shell_env, text, depth)
     if name in SHELLS:
@@ -1343,7 +1397,8 @@ def check_shell(args: list[str], cmd: Command, text: str, depth: int) -> Verdict
     if has_c:
         return check(args[i], depth + 1) if i < len(args) else ALLOWED
     if i < len(args):
-        return ALLOWED  # a script file: what it runs is out of sight
+        # A script file: what it runs is out of sight, but which script it is isn't.
+        return maintainer_script(args[i])
     if cmd.stdin_scripts:
         return worst([check(s, depth + 1) for s in cmd.stdin_scripts])
     return ask_if_sensitive(text, "a shell reads commands from a pipe")

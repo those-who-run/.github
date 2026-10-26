@@ -432,6 +432,32 @@ SECRETS = [
 ]
 
 
+# The maintainer's own jobs in those-who-run/.github: its make targets and the scripts
+# behind them. Reading, linting or testing them is fine.
+MAINTAINER_ONLY = [
+    ("make board", "make help"),
+    ("make board-check", "make brand-assets"),
+    ("make protect", "make check"),
+    ("make protect-check", "make -C web check"),
+    ("make envs CLIENT_ID=x PEM=key", "make clean"),
+    ("make envs-check", "make wordmark NOTO=x"),
+    ("make new-repo-check REPO=radio", "make REPO=radio help"),
+    ("make -C ../.github protect-check", "make -C protect check"),
+    ("make --directory=.github board", "make -f board.mk check"),
+    ("gmake board-check", "gmake help"),
+    ("timeout 60 make envs-check", "timeout 60 make check"),
+    ("cd ../.github && make protect", "cd ../.github && make help"),
+    ("bash -c 'make board'", "bash -c 'make help'"),
+    ("./scripts/protect-repo.sh --check --all", "cat scripts/protect-repo.sh"),
+    ("scripts/board-sync.sh --dry-run", "shellcheck scripts/board-sync.sh"),
+    ("bash scripts/release-envs.sh --check", "bash scripts/other.sh --check"),
+    ("sh -x scripts/new-repo-check.sh radio", "git add scripts/new-repo-check.sh"),
+    ("source scripts/board-sync.sh", "source scripts/env.sh"),
+    (". scripts/protect-repo.sh", ". scripts/env.sh"),
+    ("/usr/bin/env bash scripts/protect-repo.sh --all", "python3 -m unittest discover tests"),
+]
+
+
 class SkippingTheHooks(GuardTest):
     def test_skipping_the_hooks_is_blocked(self):
         self.assert_pairs(NO_VERIFY)
@@ -454,6 +480,25 @@ class OutwardFacingActions(GuardTest):
         self.assertEqual(
             self.decision("gh issue comment 1 --body hi && gh pr merge 1 --admin"), "block"
         )
+
+
+class MaintainerOnly(GuardTest):
+    def test_the_maintainers_targets_and_scripts_are_blocked(self):
+        self.assert_pairs(MAINTAINER_ONLY)
+
+    def test_the_reason_says_whose_job_it_is(self):
+        self.assertIn("the maintainer's own job", self.reason("make envs-check"))
+        self.assertIn("protect-repo.sh", self.reason("bash scripts/protect-repo.sh --all"))
+
+    def test_the_targets_are_the_makefiles_maintainer_group(self):
+        """The guard's list and the Makefile's "Maintainer only" group in
+        those-who-run/.github, where both live, name the same targets."""
+        makefile = AGENT.parent / "Makefile"
+        help_text = makefile.read_text().split("Maintainer only", 1)[1].split("\n\n", 1)[0]
+        listed = set(re.findall(r'@echo "([a-z-]+) +- ', help_text))
+        self.assertEqual(listed, guard.MAINTAINER_TARGETS)
+        scripts = {p.name for p in (AGENT.parent / "scripts").glob("*.sh")}
+        self.assertEqual(scripts, guard.MAINTAINER_SCRIPTS)
 
 
 class Log(GuardTest):

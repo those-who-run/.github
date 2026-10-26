@@ -165,7 +165,7 @@ owners, Issues, release tag patterns, whether it publishes, and CodeQL's languag
 and the release App's numeric App ID (`release_app_id`).
 `scripts/protect-repo.sh` applies it. A new repository, or a check that a repository
 starts to require, is a change to that list in a PR; the maintainer merges it and
-runs the script. Agents never run it: it changes repository settings.
+runs `make protect`. Agents never run it: it changes repository settings.
 
 A publishing repository may also set `prevent_self_review`, which is false when left
 out. It stays off while the maintainer is the only reviewer of the `release`
@@ -173,6 +173,33 @@ environment: GitHub won't let a reviewer approve a deployment in a run they star
 and his merge starts each release run, so with it on every release would wait for an
 approval nobody can give. The environment still needs his approval, and the bot
 account isn't a reviewer. Turn it on once there is a second reviewer.
+
+## The maintainer's make targets
+
+The maintainer's repeated jobs are make targets here, each a script in `scripts/`
+run with the gh login of whoever runs make. `make help` lists them under "Maintainer
+only (your own gh login)":
+
+| Target | Script | What it does |
+| --- | --- | --- |
+| `make board-check` | `board-sync.sh --dry-run` | Prints the moves `make board` would make, and changes nothing. |
+| `make board` | `board-sync.sh` | Sets each issue card's Status on the project Race Control from its issue: closed is Done, open with `needs triage` is Needs triage, any other open issue is Ready. A card In progress or In review moves only to Done. Pull requests on the board are left alone. |
+| `make protect-check` | `protect-repo.sh --check --all` | Reports where each repository differs from `scripts/repos.json`, and any ruleset whose enforcement isn't `active`. |
+| `make protect` | `protect-repo.sh` | The check, the apply, then the check again. |
+| `make envs-check` | `release-envs.sh --check` | Reports each releasing repository's `release-please` environment: its branch policies, its secret and variable names, and the repository's secret names. A repository-level `RELEASE_APP_PRIVATE_KEY` is wrong. It prints names, never values. |
+| `make envs CLIENT_ID=… PEM=…` | `release-envs.sh` | Sets up those environments with the release App's Client ID and private key file, then checks them. It refuses when either is missing or the file doesn't exist, and never prints either. |
+| `make new-repo-check REPO=…` | `new-repo-check.sh` | Reads a new repository and prints a pass or fail line for each thing it needs: `main` with a LICENSE, push access for the team `pit-crew`, a place in `scripts/repos.json`, its `release-please` environment, the label `component: <repo>` in paddock, and `.github/CODEOWNERS` on `main`. |
+
+The board's Status field and its options are looked up by name on each run, so
+recreating an option doesn't break the sync. A repository releases when it has a
+`release-please-config.json` on its default branch, which `release-please.yml` reads.
+Each script's header says the rest.
+
+**Agents never run these targets or the scripts behind them**, the read-only checks
+included, and never handle the release App's private key. They change repository
+settings and the organisation's project board with the maintainer's login, and their
+tests run them only against a stub `gh` (`tests/test_maintainer_targets.py`,
+`tests/test_protect_repo.py`). The agent guard blocks them.
 
 ## Releases
 
