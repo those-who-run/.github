@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.9](https://github.com/those-who-run/.github/compare/v0.2.8...v0.2.9) (2026-10-26)
+
+
+### Features
+
+* **release:** open a PR in every repository when .github releases ([#41](https://github.com/those-who-run/.github/issues/41)) ([4f33ef0](https://github.com/those-who-run/.github/commit/4f33ef04880d6ffbd308300d8f793f21d3c0d47f))
+
 ## [0.2.8](https://github.com/those-who-run/.github/compare/v0.2.7...v0.2.8) (2026-10-26)
 
 
