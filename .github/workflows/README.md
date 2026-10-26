@@ -410,8 +410,14 @@ For each repository that adopts release-please (first `.github`):
      the App's settings. Store it, then delete the downloaded file at once. A key is
      never kept on disk for a later repository: each repository gets a new key.
      Delete a key in the App's settings once no environment uses it.
+
+   `make envs CLIENT_ID=<Client ID> PEM=<key file>` does this step in every
+   repository that releases, storing the one key in each; `make envs-check` reports
+   what each has (names only). To give a repository a key of its own, run
+   `scripts/release-envs.sh <owner/repo>` with `CLIENT_ID` and `PEM` set.
 3. Make sure the repository is in `scripts/repos.json`, then run
-   `scripts/protect-repo.sh --check <owner/repo>`, the apply, and `--check` again.
+   `make protect` (the check, the apply, and the check again).
+   `make new-repo-check REPO=<name>` then reads everything a new repository needs.
    The `release tag creation` ruleset then lets only the App create a release tag.
 4. Confirm the next release PR is opened by `twr-release[bot]`, its required checks
    run without a dispatch, and merging it creates the tag and release as the App.

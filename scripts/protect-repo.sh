@@ -79,7 +79,8 @@
 # CodeQL as they are.
 #
 # --check reads each repository's settings and prints what differs from the list,
-# changing nothing; it exits 1 on any difference. Where code_owners is on, it also
+# changing nothing; it exits 1 on any difference. It also reports every ruleset on the
+# repository, listed here or not, whose enforcement isn't `active`. Where code_owners is on, it also
 # reads .github/CODEOWNERS, which must have a catch-all `*` rule naming the
 # maintainer. What can't be read without admin rights is printed as "not checked",
 # so --check is only complete with an admin login, and it warns when it isn't.
@@ -384,6 +385,28 @@ ruleset() {
   reconcile "ruleset '$name'" "$want_c" "$have_c" write_ruleset "$id" "$body"
 }
 
+# Reports each ruleset on the repository whose enforcement isn't `active`: drift in
+# --check, a warning in an apply (one the list doesn't manage stays as it is).
+enforcement_report() {
+  local list off name enforcement
+  if ! list=$(rulesets); then
+    say "ruleset enforcement: not checked: GitHub refused a read (its message is above)" >&2
+    failed=true
+    repo_failed=true
+    return 0
+  fi
+  off=$(jq -r '.[] | select((.enforcement // "active") != "active") | "\(.name)\t\(.enforcement)"' <<<"$list")
+  [ -n "$off" ] || return 0
+  while IFS=$'\t' read -r name enforcement; do
+    if [ "$mode" = check ]; then
+      say "drift: ruleset '$name' is not enforced: enforcement is $enforcement, want active"
+      drift=true
+    else
+      say "warning: ruleset '$name' is not enforced: enforcement is $enforcement"
+    fi
+  done <<<"$off"
+}
+
 # Each writer returns non-zero if any of its writes failed. One that makes several
 # writes carries on past a failed one where the next doesn't depend on it.
 write_merge() {
@@ -546,6 +569,12 @@ protect() {
        bypass_actors: [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}],
        rules: [{type: "creation"}]}')"
   fi
+
+  # Every ruleset on the repository, not only the three above, must be enforced. A
+  # ruleset someone set to disabled (or evaluate) by hand protects nothing, and a
+  # disabled `main` once went unnoticed. The list is read after the writes above, so
+  # an apply reports only what it didn't set itself.
+  enforcement_report
 
   # Merging: squash only, the PR title as the commit, branches deleted, auto-merge allowed.
   want='{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false,"squash_merge_commit_title":"PR_TITLE","delete_branch_on_merge":true,"allow_auto_merge":true}'
