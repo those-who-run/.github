@@ -20,14 +20,21 @@ name: Release PR
 # workflow_dispatch is the way back if a merged release PR was not tagged (its label
 # still says `autorelease: pending`): run this workflow on main and release-please
 # tags and releases as on a merge.
+#
+# On a release, the fan-out job opens a PR in every other repository in
+# scripts/repos.json that moves it onto the release: its workflow pins, its Renovate
+# preset and its copy of the guard (scripts/fan_out.py). It runs as the release App,
+# so each PR starts the repository's CI; a PR opened with the GITHUB_TOKEN starts
+# none. The App needs Contents, Pull requests and Workflows (read and write) on those
+# repositories. Nothing merges the PRs: the maintainer does.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Nothing by default; the job grants what release-please.yml's jobs use with the
-# GITHUB_TOKEN (the digest, auto-merge-off and the release dispatch), and each of
-# them narrows it. release-please itself writes with the App's token.
+# Nothing by default; the release job grants what release-please.yml's jobs use with
+# the GITHUB_TOKEN (the digest, auto-merge-off and the release dispatch), and each of
+# them narrows it. release-please and the fan-out write with the App's token.
 permissions: {}
 
 # One run at a time; a newer push supersedes a queued one, never a running one.
@@ -50,3 +57,45 @@ jobs:
     # By name only: the reusable job reads the environment's value.
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+  # A PR in every other repository moving it onto the release just made. Only on a
+  # release, on main, in the release-please environment (main only), which holds the
+  # App's Client ID and key; a run on any other ref gets neither.
+  fan-out:
+    needs: release
+    if: needs.release.outputs.release_created == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release-please
+    # The GITHUB_TOKEN only checks this repository out; every write is the App's.
+    permissions:
+      contents: read
+    steps:
+      # This repository at the release, for the script and the guard it copies.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag_name }}
+          persist-credentials: false
+      - name: The repositories
+        id: repos
+        run: echo "names=$(python3 scripts/fan_out.py --names)" >> "$GITHUB_OUTPUT"
+      # Scoped to the repositories the fan-out opens PRs in, and narrowed to what it
+      # writes. The App must be installed on each: one it can't reach fails the token,
+      # and so the whole job. A step output, masked in the log, revoked when the job
+      # ends.
+      - name: The release App's token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repos.outputs.names }}
+          permission-contents: write # the PR's branch
+          permission-pull-requests: write # the PR
+          permission-workflows: write # the pins in .github/workflows/
+      - name: A PR in every repository
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: python3 scripts/fan_out.py --tag "$TAG" --app-slug "$APP_SLUG"
