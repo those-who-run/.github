@@ -415,19 +415,23 @@ For each repository that adopts release-please (first `.github`):
    environment of every repository that releases (decided by the maintainer on
    2026-10-26). Every key of the App has the same access, so a key per repository
    would only let one be revoked alone; it would not limit what a leaked key can do.
+   The key is kept in two places only: the `release-please` environments, and
+   wherever the maintainer keeps it safe, such as a password manager. A key file
+   written out to run `make envs` is deleted once the run is done.
+
    `make envs CLIENT_ID=<Client ID> PEM=<key file>` sets the environment, the variable
-   and the secret in every repository that releases, then checks them, and
-   `make envs-check` reports what each has (names only). Delete the downloaded key
-   file once it is stored.
+   and the secret in every repository that releases, then checks them. `make
+   envs-check` reports what each has: names only, and when each key secret was last
+   updated, so a rotation can be seen to have reached every repository.
+
+   A new repository that releases takes the key from where the maintainer keeps it,
+   with `scripts/release-envs.sh <owner/repo>` and `CLIENT_ID` and `PEM` set, which
+   sets up that repository alone. If the key isn't at hand, rotate it instead.
 
    To rotate the key: generate a new private key on the App's settings page, run
-   `make envs` again with the new file, check with `make envs-check`, then delete the
-   old key on the App's page.
-
-   A single new repository takes the shared key with `scripts/release-envs.sh
-   <owner/repo>`, with `CLIENT_ID` and `PEM` set, which sets up that repository alone.
-   If the key file is no longer at hand, rotate the key instead, which reaches the
-   new repository too once it has its `release-please-config.json`.
+   `make envs` with it (every repository that releases, the new one included once it
+   has its `release-please-config.json`), confirm with `make envs-check`, keep the new
+   key safe, then delete the old key on the App's page.
 3. Make sure the repository is in `scripts/repos.json`, then run
    `make protect` (the check, the apply, and the check again).
    `make new-repo-check REPO=<name>` then reads everything a new repository needs.
