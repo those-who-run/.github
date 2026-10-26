@@ -122,6 +122,17 @@
       "publishes": false,
       "tags": ["v*"],
       "codeql": []
+    },
+    "those-who-run/podium": {
+      "checks": ["test", "checks / checks"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": false,
+      "tags": ["v*"],
+      "codeql": []
     }
   }
 }
