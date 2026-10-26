@@ -36,7 +36,7 @@
       "codeql": []
     },
     "those-who-run/contracts": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
@@ -47,7 +47,7 @@
       "codeql": []
     },
     "those-who-run/salsa": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
@@ -55,29 +55,29 @@
       "issues": false,
       "publishes": false,
       "tags": ["v*"],
-      "codeql": []
+      "codeql": ["go"]
     },
     "those-who-run/ecu": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
       "actions_prs": false,
       "issues": false,
-      "publishes": false,
+      "publishes": true,
       "tags": ["v*"],
-      "codeql": []
+      "codeql": ["go"]
     },
     "those-who-run/logbook": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
       "actions_prs": false,
       "issues": false,
-      "publishes": false,
+      "publishes": true,
       "tags": ["v*"],
-      "codeql": []
+      "codeql": ["go"]
     },
     "those-who-run/shakedown-fangio": {
       "checks": ["test", "checks / checks"],
@@ -124,7 +124,7 @@
       "codeql": []
     },
     "those-who-run/podium": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
