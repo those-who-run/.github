@@ -423,6 +423,33 @@ class ProtectRepo(unittest.TestCase):
         self.assertIn('"context": "image / build"', sent)
         self.assertNotIn('"context": "checks"', sent)
 
+    def status_checks(self, repo):
+        main = self.ruleset(repo, "main")
+        found = [r for r in main["rules"] if r["type"] == "required_status_checks"]
+        self.assertEqual(len(found), 1)
+        return found[0]["parameters"]
+
+    def test_every_listed_repository_merges_only_up_to_date_branches(self):
+        # Two PRs, each green on its own head, broke `main` once both were merged:
+        # strict checks make a branch catch up with `main` and pass again first.
+        repositories = json.loads(LIST.read_text())["repositories"]
+        for name in repositories:
+            self.state["repos"][name] = fresh_repo()
+        run = self.run_script("--all", list_file=self.list_with_app)
+        self.assertEqual(run.code, 0, run.err)
+        for name, listed in repositories.items():
+            with self.subTest(repo=name):
+                self.assertTrue(listed["checks"], "a listed repository with no checks has no strict policy")
+                self.assertIs(self.status_checks(name)["strict_required_status_checks_policy"], True)
+
+    def test_a_one_off_with_checks_merges_only_up_to_date_branches(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--checks", "test")
+        self.assertEqual(run.code, 0, run.err)
+        sent = [r for r in run.sent("/rulesets")[0]["input"]["rules"] if r["type"] == "required_status_checks"]
+        self.assertIs(sent[0]["parameters"]["strict_required_status_checks_policy"], True)
+        self.assertIs(self.status_checks("example/repo")["strict_required_status_checks_policy"], True)
+
     def test_a_bad_list_changes_nothing(self):
         cases = {
             "missing field tags": {"example/repo": {k: v for k, v in entry().items() if k != "tags"}},
@@ -829,6 +856,24 @@ class ProtectRepo(unittest.TestCase):
             "example/tool: drift: ruleset 'release tag creation': bypass:",
         ):
             self.assertIn(line, run.out)
+
+    def test_check_reports_branches_not_required_up_to_date(self):
+        self.everything_listed()
+        self.run_script("--all")
+        self.status_checks("example/tool")["strict_required_status_checks_policy"] = False
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertEqual(run.writes, [])
+        self.assertIn("example/tool: drift: ruleset 'main': "
+                      "rules.required_status_checks.strict_required_status_checks_policy: want true, have false",
+                      run.out)
+        self.assertNotIn("example/image: drift:", run.out)
+        fixed = self.run_script("--all")
+        self.assertEqual(fixed.code, 0, fixed.err)
+        self.assertIn("example/tool: ruleset 'main': changed", fixed.out)
+        self.assertEqual(len(fixed.writes), 1)
+        self.assertIs(self.status_checks("example/tool")["strict_required_status_checks_policy"], True)
+        self.assertEqual(self.run_script("--check", "--all").code, 0)
 
     def test_check_reports_a_ruleset_that_is_not_enforced(self):
         # A disabled `main` once went unnoticed; so would one the list doesn't manage.

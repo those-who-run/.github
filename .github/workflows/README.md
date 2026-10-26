@@ -14,6 +14,17 @@ for a check that never reports. Adding a required input, removing or renaming on
 changing a default's meaning is a breaking change
 ([AGENTS.md](../../AGENTS.md#workflows)).
 
+The `main` ruleset's required checks are strict: a pull request's branch must be up
+to date with `main` before it merges, so its checks have run against the `main` it
+merges into. Two PRs that are each green on their own head can still break `main`
+once both are merged, when one changes something the other's code or tests use.
+When `main` moves, an open PR shows "This branch is out-of-date with the base
+branch" and waits until its branch is updated ("Update branch" on the PR, or a
+rebase pushed by its author) and its checks pass again. Updating is a push, so, as
+after any push, an approval given before it is dismissed. Renovate's PRs and the
+release PR are updated by their own tools; the fan-out's are not
+([the fan-out](#the-fan-out)).
+
 ## checks.yml
 
 The language-neutral checks every repository runs on a PR: dependency review, the
@@ -526,6 +537,12 @@ write**, and it must be installed on every repository in `scripts/repos.json`. T
 maintainer sets both on the App's settings page. The commits are the App's bot
 (`twr-release[bot]`, with its noreply address). Nothing merges, approves or arms
 auto-merge on the PRs: the maintainer reviews and merges each one.
+
+The fan-out PRs all open at once, and `main`'s required checks are strict, so once
+one of them, or any other PR, merges in a repository, that repository's fan-out PR
+is out of date. The maintainer updates it with "Update branch" on the PR, which
+merges `main` into the branch and runs its checks again, before merging it. The
+fan-out doesn't do this itself: a re-run leaves an open PR as it is.
 
 To see what a release would change, without pushing or opening anything:
 

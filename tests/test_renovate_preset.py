@@ -177,6 +177,16 @@ class RenovatePreset(unittest.TestCase):
             "a preset that turns auto-merge on",
         )
 
+    def test_rebasing_follows_the_ruleset(self):
+        # `main`'s required checks are strict (scripts/protect-repo.sh), so a PR must
+        # be up to date to merge. rebaseWhen `auto` reads that from the ruleset and
+        # rebases a PR whenever it falls behind; `conflicted` or `never` would leave
+        # the weekly PR unmergeable each time `main` moved.
+        for path, key, value in walk(self.preset):
+            if key == "rebaseWhen":
+                with self.subTest(path=f"{path}.{key}"):
+                    self.assertEqual(value, "auto")
+
     def test_actions_are_pinned_by_digest_with_the_tag(self):
         self.assertIn("helpers:pinGitHubActionDigestsToSemver", self.preset["extends"])
 
