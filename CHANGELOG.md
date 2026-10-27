@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/those-who-run/.github/compare/v0.2.10...v0.2.11) (2026-10-27)
+
+
+### Features
+
+* **protect:** require branches to be up to date before merging ([#48](https://github.com/those-who-run/.github/issues/48)) ([30ac986](https://github.com/those-who-run/.github/commit/30ac986dc61a7b2ffdbfdfe4c28e808f1d0bf82f))
+
 ## [0.2.10](https://github.com/those-who-run/.github/compare/v0.2.9...v0.2.10) (2026-10-26)
 
 
