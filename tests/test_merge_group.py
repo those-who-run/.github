@@ -11,9 +11,11 @@ So, in every workflow a caller's required check comes from:
 
 - the job has no `if:` or `needs:`, so it runs and reports on any event;
 - every step that reads the pull request runs on `pull_request` only, by an `if:`
-  that starts with `github.event_name == 'pull_request'`; on `merge_group` it is
-  skipped and the job still succeeds under the same check name. Each of these ran on
-  the PR itself, against the head the queue takes;
+  that starts with `github.event_name == 'pull_request'` and has no `||` after it;
+  on `merge_group` it is skipped and the job still succeeds under the same check
+  name. Each of these ran on the PR itself, against the head the queue takes;
+- gitleaks over `HEAD^1..HEAD` runs on both: on a merge group that range is the
+  squash commit about to land;
 - a step that reads such a step's outcome or outputs is gated the same way, so a
   check never goes quiet on `merge_group` because the step it waits for was skipped.
 
@@ -34,8 +36,7 @@ from workflow_yaml import WORKFLOWS, jobs
 # what it reads (PR_CONTEXT) whether it is listed here or not.
 REQUIRED = {
     "checks.yml": {
-        "checks": {"PR title is a conventional commit", "Dependency review",
-                   "No secrets in the PR's commits"},
+        "checks": {"PR title is a conventional commit", "Dependency review"},
     },
     "go.yml": {
         "check": {"Test guard", "Weakened tests need a reason"},
@@ -45,9 +46,14 @@ REQUIRED = {
     },
 }
 
+# Steps that run on a pull request and on a merge group, and on nothing else.
+BOTH = {("checks.yml", "checks"): {"No secrets in the PR's commits"}}
+BOTH_IF = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
+
 # What only a pull_request event carries.
 PR_CONTEXT = re.compile(r"github\.event\.(pull_request|number)\b|github\.(head_ref|base_ref)\b")
-PR_ONLY = re.compile(r"^github\.event_name == 'pull_request'( && .+)?$")
+# `&& x` may narrow the gate; `|| y` would open it again, on any event.
+PR_ONLY = re.compile(r"^github\.event_name == 'pull_request'( && (?:(?!\|\|).)+)?$")
 STEP_START = re.compile(r"^      - ")
 STEP_IF = re.compile(r"^        if:\s*(.+?)\s*$")
 STEP_ID = re.compile(r"^        id:\s*(\S+)\s*$")
@@ -77,7 +83,7 @@ def steps(job: dict) -> list[dict]:
     return found
 
 
-def problems(text: str, job_name: str, pr_steps: set[str]) -> list[str]:
+def problems(text: str, job_name: str, pr_steps: set[str], both: frozenset[str] = frozenset()) -> list[str]:
     """What would leave the job's required check missing or wrong on merge_group."""
     job = jobs(text)[job_name]
     found = []
@@ -95,10 +101,12 @@ def problems(text: str, job_name: str, pr_steps: set[str]) -> list[str]:
             found.append(f"{s['name']}: reads the pull request but runs on every event")
         if s["name"] in pr_steps and not pr_only:
             found.append(f"{s['name']}: reads the pull request but runs on every event")
+        if s["name"] in both and s["if"] != BOTH_IF:
+            found.append(f"{s['name']}: should run on pull_request and merge_group only, not on {s['if']!r}")
         waits_for = {i for i in pr_only_ids if re.search(rf"\bsteps\.{re.escape(i)}\.", s["if"] or "")}
         if waits_for and not pr_only:
             found.append(f"{s['name']}: waits for {sorted(waits_for)}, which never run on merge_group")
-    for name in pr_steps - named:
+    for name in (pr_steps | both) - named:
         found.append(f"{name}: no such step")
     return found
 
@@ -110,7 +118,8 @@ class MergeGroup(unittest.TestCase):
             self.assertEqual(set(jobs(text)), set(wanted), workflow)
             for job_name, pr_steps in wanted.items():
                 with self.subTest(workflow=workflow, job=job_name):
-                    self.assertEqual(problems(text, job_name, pr_steps), [])
+                    both = frozenset(BOTH.get((workflow, job_name), set()))
+                    self.assertEqual(problems(text, job_name, pr_steps, both), [])
 
     def test_the_workflows_are_called_on_any_event(self):
         # A reusable workflow runs on the caller's event; one with its own event
@@ -134,14 +143,25 @@ class MergeGroup(unittest.TestCase):
         self.assertNotEqual(ungated, text)
         self.assertIn("PR title is a conventional commit: reads the pull request but runs on every event",
                       problems(ungated, "checks", REQUIRED["checks.yml"]["checks"]))
-        # A listed step that reads nothing from the event, such as gitleaks over
-        # HEAD^1..HEAD, a PR's merge commit, is found by name.
-        gitleaks = text.replace("      - name: No secrets in the PR's commits\n"
-                                "        if: github.event_name == 'pull_request'\n",
-                                "      - name: No secrets in the PR's commits\n", 1)
-        self.assertNotEqual(gitleaks, text)
-        self.assertIn("No secrets in the PR's commits: reads the pull request but runs on every event",
-                      problems(gitleaks, "checks", REQUIRED["checks.yml"]["checks"]))
+        # A gate that `||` opens again runs on a merge group too.
+        reopened = text.replace("        if: github.event_name == 'pull_request'\n        env:\n"
+                                "          PR_TITLE:", "        if: github.event_name == 'pull_request' && "
+                                "inputs.commit-types != '' || always()\n        env:\n          PR_TITLE:", 1)
+        self.assertNotEqual(reopened, text)
+        self.assertIn("PR title is a conventional commit: reads the pull request but runs on every event",
+                      problems(reopened, "checks", REQUIRED["checks.yml"]["checks"]))
+        # gitleaks reads nothing from the event, so it is found by name: on a push
+        # HEAD^1..HEAD is not what it means to scan.
+        both = frozenset(BOTH[("checks.yml", "checks")])
+        for gate in ("", "        if: github.event_name == 'pull_request'\n",
+                     "        if: github.event_name != 'push'\n"):
+            gitleaks = text.replace("      - name: No secrets in the PR's commits\n        if: " + BOTH_IF + "\n",
+                                    "      - name: No secrets in the PR's commits\n" + gate, 1)
+            with self.subTest(gate=gate):
+                self.assertNotEqual(gitleaks, text)
+                found = problems(gitleaks, "checks", REQUIRED["checks.yml"]["checks"], both)
+                self.assertTrue([f for f in found if f.startswith("No secrets in the PR's commits: should run")],
+                                found)
         job_if = text.replace("  checks:\n    runs-on: ubuntu-latest\n",
                               "  checks:\n    runs-on: ubuntu-latest\n    if: github.event_name == 'pull_request'\n", 1)
         self.assertIn("checks: a job-level if: can leave the required check unreported",
@@ -155,6 +175,14 @@ class MergeGroup(unittest.TestCase):
         found = problems(waiting, "check", set())
         self.assertIn("Weakened tests need a reason: waits for ['guard'], which never run on merge_group", found)
         # It reads the PR's number too.
+        self.assertIn("Weakened tests need a reason: reads the pull request but runs on every event", found)
+        # The same with the gate kept but opened again by `||`.
+        reopened = text.replace("        if: github.event_name == 'pull_request' && steps.guard.outcome == 'success'\n",
+                                "        if: github.event_name == 'pull_request' && steps.guard.outcome == 'success'"
+                                " || always()\n", 1)
+        self.assertNotEqual(reopened, text)
+        found = problems(reopened, "check", set())
+        self.assertIn("Weakened tests need a reason: waits for ['guard'], which never run on merge_group", found)
         self.assertIn("Weakened tests need a reason: reads the pull request but runs on every event", found)
 
 
