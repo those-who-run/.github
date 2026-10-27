@@ -563,12 +563,14 @@ protect() {
   #   check_response_timeout_minutes 60   a required check that hasn't reported in
   #                                  60 min fails the group (go.yml's job stops at
   #                                  30 min; an image build takes a few).
-  #   max_entries_to_build 5, max_entries_to_merge 5   GitHub's defaults: at most 5
-  #                                  groups run their checks, and merge, at once.
+  #   max_entries_to_build 5         GitHub's default: at most 5 queued PRs request
+  #                                  checks at once (with ALLGREEN, a run each).
+  #   max_entries_to_merge 5         GitHub's default: at most 5 PRs merge together.
   #   min_entries_to_merge 1, min_entries_to_merge_wait_minutes 5   a lone PR merges
   #                                  without waiting for others (GitHub's defaults).
-  # The strict policy stays on with it: it is redundant inside the queue but keeps
-  # its meaning for a merge that bypasses the queue.
+  # The strict policy stays on with it. Inside the queue it is redundant (a bypass
+  # actor skips every rule, strict included), but it is what protects a repository
+  # without the queue, and keeping it everywhere keeps one path through the script.
   approvals=$(jq .approvals <<<"$cfg")
   fresh=$([ "$approvals" -gt 0 ] && echo true || echo false)
   checks=$(jq -c '[.checks[] | {context: ., integration_id: 15368}]' <<<"$cfg")

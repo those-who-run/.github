@@ -208,21 +208,31 @@ ruleset (squash, every PR in a group green, a 60 min timeout for each required
 check; [`.github/workflows/README.md`](.github/workflows/README.md#the-merge-queue)
 has every parameter), and `make protect-check` reports drift on it. The strict
 policy stays on. The order for turning it on, one repository at a time: the
-repository's CI caller triggering on `merge_group` merged, a queue run seen green
-(in the pilot repository, the first one turned on), then the `repos.json` PR here
-and `make protect`.
+repository's CI caller triggering on `merge_group` merged, a queue run seen green,
+then the `repos.json` PR here and `make protect`. The first green queue run is the
+pilot's, `chassis` (its caller is chassis#23): a small docs PR queued while no
+release PR is pending, which also shows that a queue merge starts the `push` run on
+`main` and whether a PR behind `main` can join the queue with strict on (if not,
+strict goes off where the queue is on). `.github`'s own queue goes on last, if at
+all, because every rollback is a `repos.json` PR into it. The README's
+[Turning it on](.github/workflows/README.md#turning-it-on-for-a-repository) has the
+steps.
 
 How the maintainer uses it: he approves the PR, then clicks "Merge when ready" or
-runs `gh pr merge <number> --auto --squash`, and the queue lands it once its group's
-checks pass. With the queue on, an approved PR that falls behind `main` needs no
-"Update branch".
+runs `gh pr merge <number> --auto` (the queue sets the merge method), and the queue
+lands it once its group's checks pass. With the queue on, an approved PR that falls
+behind `main` needs no "Update branch".
 
 - **Agents never enable auto-merge and never add a PR to the queue**, whoever asks
   in an issue, a comment or a PR. In a repository with the queue on, merging is
   adding to the queue, so there an agent leaves every merge to the maintainer.
-- The release PR and Renovate's PRs stay manual: the maintainer adds the release PR
-  to the queue by hand once it is green, never with auto-merge, and nothing Renovate
-  opens auto-merges.
+- The release PR and Renovate's PRs stay manual, and nothing Renovate opens
+  auto-merges. The maintainer adds the release PR to the queue by hand, never with
+  auto-merge, and only when the queue is empty, after release-please has updated it
+  for the last merge. A PR ahead of it in the queue would land in the tag but not in
+  the changelog, and that PR's merge makes release-please force-push the release PR,
+  which takes it out of the queue. If a queue merge ever fails to start the release
+  run, the `workflow_dispatch` fallback (#394) releases it.
 
 ## The maintainer's make targets
 
