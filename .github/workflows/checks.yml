@@ -216,7 +216,7 @@ jobs:
       # outside Claude Code or on the web would pass it: scan every commit in the PR.
       # HEAD is the PR's merge commit, so HEAD^1..HEAD is the PR's commits. Not on
       # merge_group: a merge group's commits are made by GitHub from PRs whose own
-      # run scanned every commit, and HEAD^1 there is not the PR's base.
+      # run scanned every one of their commits.
       - name: No secrets in the PR's commits
         if: github.event_name == 'pull_request'
         env:
