@@ -36,7 +36,7 @@
 #   tags         its release tag patterns, such as "v*" or "gen/go/v*".
 #   codeql       languages for CodeQL's default setup, such as ["go", "actions"];
 #                [] turns it off. Only the languages default setup supports.
-# and may have this one, false when left out:
+# and may have these, each false when left out:
 #   prevent_self_review  whether the `release` environment stops a reviewer approving
 #                a deployment in a run they started. Only with publishes. Off while
 #                the maintainer is the only reviewer: his merge starts each release
@@ -44,6 +44,13 @@
 #                release would wait until it timed out. The environment still needs
 #                his approval, and the bot account isn't a reviewer. Turn it on once
 #                there is a second reviewer.
+#   merge_queue  whether `main` merges through GitHub's merge queue: the `main` ruleset
+#                gains a `merge_queue` rule (squash; every PR in a group must pass the
+#                required checks, ALLGREEN; the parameters are in protect() below).
+#                Only with checks. Turn it on only once the repository's CI caller
+#                triggers on `merge_group` and a queue run has been seen green: a
+#                required check that never reports on `merge_group` stalls the queue.
+#                The strict policy stays on either way.
 # The top-level `maintainer` is the required reviewer of each `release` environment,
 # and the account each .github/CODEOWNERS must name in its catch-all `*` rule.
 # The top-level `release_app_id` is the numeric App ID of the organisation's release
@@ -157,7 +164,7 @@ VALIDATE='
 def app_id: (type == "number" and . > 0 and . == floor) or (type == "string" and startswith("PLACEHOLDER"));
 def langs: ["actions","c-cpp","csharp","go","java-kotlin","javascript-typescript","python","ruby","swift"];
 def fields: ["checks","actions","approvals","code_owners","actions_prs","issues","publishes","tags","codeql"];
-def optional: ["prevent_self_review"];
+def optional: ["prevent_self_review","merge_queue"];
 def bool($r; $f): if (.[$f] | type) != "boolean" then "\($r): \($f) must be true or false" else empty end;
 def strings: type == "array" and all(.[]; type == "string" and length > 0);
 def repo($r):
@@ -185,6 +192,9 @@ def repo($r):
     (if has("prevent_self_review") then bool($r; "prevent_self_review") else empty end),
     (if .prevent_self_review == true and .publishes != true then
        "\($r): prevent_self_review needs publishes: it is a setting of the release environment" else empty end),
+    (if has("merge_queue") then bool($r; "merge_queue") else empty end),
+    (if .merge_queue == true and ((.checks // []) | length) == 0 then
+       "\($r): merge_queue needs checks: the queue merges a group once its required checks pass" else empty end),
     (if .publishes == true and .actions != true then "\($r): publishes needs actions: releases run on Actions" else empty end),
     (if .actions != true and ((.checks // []) | length) > 0 then "\($r): checks need actions: they report from GitHub Actions" else empty end),
     (if .actions != true and ((.codeql // []) | length) > 0 then "\($r): codeql needs actions: default setup runs on Actions" else empty end)
@@ -221,10 +231,10 @@ fi
 
 # The repositories to protect, one compact JSON object each: {"repo": ..., settings}.
 if [ "$all" = true ]; then
-  targets=$(jq -c '.repositories | to_entries[] | {repo: .key, prevent_self_review: false} + .value' <<<"$listed")
+  targets=$(jq -c '.repositories | to_entries[] | {repo: .key, prevent_self_review: false, merge_queue: false} + .value' <<<"$listed")
 else
   # GitHub's names ignore case, so "Paddock" is paddock and takes paddock's settings.
-  entry=$(jq -c --arg r "$target" '.repositories | to_entries[] | select((.key | ascii_downcase) == ($r | ascii_downcase)) | {repo: .key, prevent_self_review: false} + .value' <<<"$listed")
+  entry=$(jq -c --arg r "$target" '.repositories | to_entries[] | select((.key | ascii_downcase) == ($r | ascii_downcase)) | {repo: .key, prevent_self_review: false, merge_queue: false} + .value' <<<"$listed")
   if [ -n "$entry" ]; then
     [ "$one_off" = false ] || fail "$target is in $list, which sets its options: change it there"
     targets=$entry
@@ -234,7 +244,7 @@ else
       --argjson actions "$f_actions" '$ARGS.positional as $checks |
       {repo: $r, checks: $checks, actions: $actions, approvals: $approvals,
        code_owners: $code_owners, actions_prs: $actions_prs, issues: null,
-       publishes: false, prevent_self_review: false, tags: ["v*"], codeql: null}' --args ${f_checks[@]+"${f_checks[@]}"})
+       publishes: false, prevent_self_review: false, merge_queue: false, tags: ["v*"], codeql: null}' --args ${f_checks[@]+"${f_checks[@]}"})
     problems=$(jq -r --argjson strict false --arg m "$maintainer" --argjson app "$release_app_id" \
       '{maintainer: $m, release_app_id: $app, repositories: {(.repo): del(.repo)}} | '"$VALIDATE" <<<"$targets")
     [ -z "$problems" ] || fail "${problems//actions_prs needs code_owners/--actions-prs needs --code-owners}"
@@ -543,6 +553,24 @@ protect() {
   # (one renames what the other's tests call); strict makes the second update and
   # run its checks again first. Every repository takes it, the list has no field
   # for it, and a one-off with --checks takes it too.
+  # With merge_queue, `main` also merges through GitHub's merge queue, which tests each
+  # PR merged onto the latest `main` and the PRs ahead of it before it lands, so an
+  # approved PR set to auto-merge needs no "Update branch". The queue's parameters:
+  #   merge_method SQUASH            as every merge here: the PR title is the commit.
+  #   grouping_strategy ALLGREEN     every PR's commit in a group passes the required
+  #                                  checks, not only the group's head, so each squash
+  #                                  commit on `main` was itself green.
+  #   check_response_timeout_minutes 60   a required check that hasn't reported in
+  #                                  60 min fails the group (go.yml's job stops at
+  #                                  30 min; an image build takes a few).
+  #   max_entries_to_build 5         GitHub's default: at most 5 queued PRs request
+  #                                  checks at once (with ALLGREEN, a run each).
+  #   max_entries_to_merge 5         GitHub's default: at most 5 PRs merge together.
+  #   min_entries_to_merge 1, min_entries_to_merge_wait_minutes 5   a lone PR merges
+  #                                  without waiting for others (GitHub's defaults).
+  # The strict policy stays on with it. Inside the queue it is redundant (a bypass
+  # actor skips every rule, strict included), but it is what protects a repository
+  # without the queue, and keeping it everywhere keeps one path through the script.
   approvals=$(jq .approvals <<<"$cfg")
   fresh=$([ "$approvals" -gt 0 ] && echo true || echo false)
   checks=$(jq -c '[.checks[] | {context: ., integration_id: 15368}]' <<<"$cfg")
@@ -557,7 +585,12 @@ protect() {
          allowed_merge_methods: ["squash"]}}]
        + if ($checks | length) > 0 then [{type: "required_status_checks", parameters: {
            strict_required_status_checks_policy: true, do_not_enforce_on_create: false,
-           required_status_checks: $checks}}] else [] end)}')"
+           required_status_checks: $checks}}] else [] end
+       + if $cfg.merge_queue then [{type: "merge_queue", parameters: {
+           merge_method: "SQUASH", grouping_strategy: "ALLGREEN",
+           check_response_timeout_minutes: 60,
+           max_entries_to_build: 5, max_entries_to_merge: 5,
+           min_entries_to_merge: 1, min_entries_to_merge_wait_minutes: 5}}] else [] end)}')"
 
   # Release tags: nobody moves or deletes one, with no bypass at all. Creating one is
   # restricted too, and only the release App, which release-please runs as, may: a

@@ -469,6 +469,8 @@ class ProtectRepo(unittest.TestCase):
             "codeql languages are actions,": {"example/repo": entry(codeql=["rust"])},
             "prevent_self_review must be true or false": {"example/repo": entry(publishes=True, prevent_self_review="no")},
             "prevent_self_review needs publishes": {"example/repo": entry(prevent_self_review=True)},
+            "merge_queue must be true or false": {"example/repo": entry(merge_queue="yes")},
+            "merge_queue needs checks": {"example/repo": entry(checks=[], merge_queue=True)},
             "checks must be a list of names": {"example/repo": entry(checks="test lint")},
             "checks has a name twice": {"example/repo": entry(checks=["test", "test"])},
             "issues must be true or false": {"example/repo": entry(issues=None)},
@@ -873,6 +875,107 @@ class ProtectRepo(unittest.TestCase):
         self.assertIn("example/tool: ruleset 'main': changed", fixed.out)
         self.assertEqual(len(fixed.writes), 1)
         self.assertIs(self.status_checks("example/tool")["strict_required_status_checks_policy"], True)
+        self.assertEqual(self.run_script("--check", "--all").code, 0)
+
+    # The merge queue (those-who-run/paddock#277): a rule in `main`'s ruleset, only
+    # where the list asks for it.
+
+    QUEUE = {"merge_method": "SQUASH", "grouping_strategy": "ALLGREEN",
+             "check_response_timeout_minutes": 60, "max_entries_to_build": 5,
+             "max_entries_to_merge": 5, "min_entries_to_merge": 1,
+             "min_entries_to_merge_wait_minutes": 5}
+
+    def queue_rules(self, repo):
+        return [r for r in self.ruleset(repo, "main")["rules"] if r["type"] == "merge_queue"]
+
+    def queued_and_not(self):
+        self.write_list({
+            "example/queued": entry(checks=["test", "checks / checks"], merge_queue=True),
+            "example/plain": entry(checks=["test", "checks / checks"], merge_queue=False),
+            "example/unset": entry(checks=["test"]),
+        })
+        for name in ("example/queued", "example/plain", "example/unset"):
+            self.state["repos"][name] = fresh_repo()
+
+    def test_the_merge_queue_only_where_the_list_asks_for_it(self):
+        self.queued_and_not()
+        run = self.run_script("--all")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual([r["parameters"] for r in self.queue_rules("example/queued")], [self.QUEUE])
+        for name in ("example/plain", "example/unset"):
+            with self.subTest(repo=name):
+                self.assertEqual(self.queue_rules(name), [])
+        # Nothing sent for a repository without it, not even an empty rule.
+        sent = {c["path"].split("/")[2]: json.dumps(c["input"]) for c in run.sent("/rulesets")
+                if c["input"]["name"] == "main"}
+        self.assertIn('"merge_queue"', sent["queued"])
+        self.assertNotIn("merge_queue", sent["plain"])
+        self.assertNotIn("merge_queue", sent["unset"])
+        # The strict policy stays, with the queue and without it.
+        for name in ("example/queued", "example/plain", "example/unset"):
+            self.assertIs(self.status_checks(name)["strict_required_status_checks_policy"], True)
+
+    def test_no_listed_repository_has_the_merge_queue_yet(self):
+        # Each repository turns it on by pull request once its CI caller runs on
+        # merge_group and a queue run has been seen green.
+        repositories = json.loads(LIST.read_text())["repositories"]
+        for name, listed in repositories.items():
+            self.assertIsNot(listed.get("merge_queue", False), True, name)
+            self.state["repos"][name] = fresh_repo()
+        run = self.run_script("--all", list_file=self.list_with_app)
+        self.assertEqual(run.code, 0, run.err)
+        for name in repositories:
+            self.assertEqual(self.queue_rules(name), [], name)
+
+    def test_a_one_off_has_no_merge_queue(self):
+        self.state["repos"]["example/repo"] = fresh_repo()
+        run = self.run_script("example/repo", "--checks", "test")
+        self.assertEqual(run.code, 0, run.err)
+        self.assertEqual(self.queue_rules("example/repo"), [])
+
+    def test_a_second_apply_with_the_merge_queue_changes_nothing(self):
+        self.queued_and_not()
+        self.assertEqual(self.run_script("--all").code, 0)
+        second = self.run_script("--all")
+        self.assertEqual(second.code, 0, second.err)
+        self.assertEqual(second.writes, [])
+        self.assertEqual(self.run_script("--check", "--all").code, 0)
+
+    def test_check_reports_merge_queue_drift(self):
+        self.queued_and_not()
+        self.run_script("--all")
+        queued = self.queue_rules("example/queued")[0]["parameters"]
+        queued["grouping_strategy"] = "HEADGREEN"
+        queued["check_response_timeout_minutes"] = 5
+        # A queue turned on by hand where the list has none.
+        plain = self.ruleset("example/plain", "main")
+        plain["rules"].append({"type": "merge_queue", "parameters": dict(self.QUEUE)})
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertEqual(run.writes, [])
+        self.assertIn("example/queued: drift: ruleset 'main': "
+                      'rules.merge_queue.grouping_strategy: want "ALLGREEN", have "HEADGREEN"', run.out)
+        self.assertIn("example/queued: drift: ruleset 'main': "
+                      "rules.merge_queue.check_response_timeout_minutes: want 60, have 5", run.out)
+        self.assertIn("example/plain: drift: ruleset 'main': rules.merge_queue: want null, have {}", run.out)
+        self.assertNotIn("example/unset: drift", run.out)
+        fixed = self.run_script("--all")
+        self.assertEqual(fixed.code, 0, fixed.err)
+        self.assertEqual(len(fixed.writes), 2)
+        self.assertEqual([r["parameters"] for r in self.queue_rules("example/queued")], [self.QUEUE])
+        self.assertEqual(self.queue_rules("example/plain"), [])
+        self.assertEqual(self.run_script("--check", "--all").code, 0)
+
+    def test_check_reports_a_merge_queue_that_is_missing(self):
+        self.queued_and_not()
+        self.run_script("--all")
+        main = self.ruleset("example/queued", "main")
+        main["rules"] = [r for r in main["rules"] if r["type"] != "merge_queue"]
+        run = self.run_script("--check", "--all")
+        self.assertEqual(run.code, 1)
+        self.assertIn("example/queued: drift: ruleset 'main': rules.merge_queue.merge_method: "
+                      'want "SQUASH", have null', run.out)
+        self.assertEqual(self.run_script("--all").code, 0)
         self.assertEqual(self.run_script("--check", "--all").code, 0)
 
     def test_check_reports_a_ruleset_that_is_not_enforced(self):

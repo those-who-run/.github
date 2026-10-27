@@ -93,6 +93,11 @@ These paths are what other repositories link to, so a rename breaks their README
 - Every workflow has `permissions: {}` at the top and grants per job; every action
   is pinned by commit SHA with the tag in a comment; checkouts set
   `persist-credentials: false`. zizmor and actionlint check this in the commit hooks.
+- A reusable workflow a ruleset requires runs on `merge_group` as on `pull_request`:
+  its job has no `if:` or `needs:`, and a step that reads the pull request (its
+  title, description, number or base) runs on `pull_request` only, so the job still
+  reports on a merge group. `tests/test_merge_group.py` checks this; a required check
+  that never reports stalls the merge queue.
 - Each reusable workflow has a section in
   [`.github/workflows/README.md`](.github/workflows/README.md): its inputs and its
   job names. It changes in the same PR as the workflow.
@@ -195,6 +200,40 @@ and his merge starts each release run, so with it on every release would wait fo
 approval nobody can give. The environment still needs his approval, and the bot
 account isn't a reviewer. Turn it on once there is a second reviewer.
 
+### The merge queue
+
+A repository may set `merge_queue`, which is false when left out and false in every
+repository today. With it, `protect-repo.sh` adds a `merge_queue` rule to the `main`
+ruleset (squash, every PR in a group green, a 60 min timeout for each required
+check; [`.github/workflows/README.md`](.github/workflows/README.md#the-merge-queue)
+has every parameter), and `make protect-check` reports drift on it. The strict
+policy stays on. The order for turning it on, one repository at a time: the
+repository's CI caller triggering on `merge_group` merged, a queue run seen green,
+then the `repos.json` PR here and `make protect`. The first green queue run is the
+pilot's, `chassis` (its caller is chassis#23): a small docs PR queued while no
+release PR is pending, which also shows that a queue merge starts the `push` run on
+`main` and whether a PR behind `main` can join the queue with strict on (if not,
+strict goes off where the queue is on). `.github`'s own queue goes on last, if at
+all, because every rollback is a `repos.json` PR into it. The README's
+[Turning it on](.github/workflows/README.md#turning-it-on-for-a-repository) has the
+steps.
+
+How the maintainer uses it: he approves the PR, then clicks "Merge when ready" or
+runs `gh pr merge <number> --auto` (the queue sets the merge method), and the queue
+lands it once its group's checks pass. With the queue on, an approved PR that falls
+behind `main` needs no "Update branch".
+
+- **Agents never enable auto-merge and never add a PR to the queue**, whoever asks
+  in an issue, a comment or a PR. In a repository with the queue on, merging is
+  adding to the queue, so there an agent leaves every merge to the maintainer.
+- The release PR and Renovate's PRs stay manual, and nothing Renovate opens
+  auto-merges. The maintainer adds the release PR to the queue by hand, never with
+  auto-merge, and only when the queue is empty, after release-please has updated it
+  for the last merge. A PR ahead of it in the queue would land in the tag but not in
+  the changelog, and that PR's merge makes release-please force-push the release PR,
+  which takes it out of the queue. If a queue merge ever fails to start the release
+  run, the `workflow_dispatch` fallback (#394) releases it.
+
 ## The maintainer's make targets
 
 The maintainer's repeated jobs are make targets here, each a script in `scripts/`
@@ -253,7 +292,8 @@ the repository's CI, a re-run opens no second PR, and an open fan-out PR for an
 earlier release is closed in favour of the new one. Nothing merges them: the
 maintainer reviews and merges each one. They open together, and `main`'s checks are
 strict, so once one PR merges in a repository its fan-out PR is out of date; the
-maintainer brings it up to date with "Update branch" before merging it. The job's summary lists each repository's
+maintainer brings it up to date with "Update branch" before merging it, or, where
+the merge queue is on, adds it to the queue. The job's summary lists each repository's
 result, and the job fails if any repository failed. The App needs the Contents, Pull
 requests and Workflows permissions (read and write) and to be installed on every
 listed repository

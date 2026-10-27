@@ -23,7 +23,155 @@ branch" and waits until its branch is updated ("Update branch" on the PR, or a
 rebase pushed by its author) and its checks pass again. Updating is a push, so, as
 after any push, an approval given before it is dismissed. Renovate's PRs and the
 release PR are updated by their own tools; the fan-out's are not
-([the fan-out](#the-fan-out)).
+([the fan-out](#the-fan-out)). A repository with the merge queue on needs none of
+this: the queue tests each PR on top of the latest `main` itself
+([the merge queue](#the-merge-queue)).
+
+## The merge queue
+
+A repository can merge `main` through GitHub's merge queue
+(those-who-run/paddock#277). The queue takes an approved, green PR, merges it onto
+the latest `main` and the PRs ahead of it in a temporary branch, runs the required
+checks there on a `merge_group` event, and lands it when they pass. So a PR that has
+fallen behind `main` needs no "Update branch" and no new approval, and the strict
+policy stays on beside it.
+
+It is a rule in the `main` ruleset, written by `scripts/protect-repo.sh` for a
+repository whose entry in [`scripts/repos.json`](../../scripts/repos.json) has
+`"merge_queue": true` (false when left out). Its parameters, and why, are in the
+script's `protect()`:
+
+| Parameter | Value | Why |
+| --- | --- | --- |
+| `merge_method` | `SQUASH` | As every merge here: the PR title is the commit. |
+| `grouping_strategy` | `ALLGREEN` | Each PR's commit in a group passes the required checks, not only the group's head, so every commit on `main` was green. |
+| `check_response_timeout_minutes` | `60` | A required check that hasn't reported by then fails the group. go.yml's job stops at 30 min. |
+| `max_entries_to_build` | `5` | At most five queued PRs request checks at once; with ALLGREEN each gets its own run (GitHub's default). |
+| `max_entries_to_merge` | `5` | At most five PRs merge together (GitHub's default). |
+| `min_entries_to_merge` | `1` | A PR on its own merges without waiting for others. |
+| `min_entries_to_merge_wait_minutes` | `5` | GitHub's default; with a minimum of one, nothing waits for it. |
+
+`make protect-check` reports a queue whose parameters differ, a missing queue where
+the list asks for one, and a queue turned on by hand where it doesn't.
+
+### What a caller needs
+
+The reusable workflows here run on `merge_group` as they do on `pull_request`
+(`tests/test_merge_group.py`): every job reports under the same check name, and the
+steps that read the pull request run on `pull_request` only and are skipped on the
+merge group. Those are checks.yml's PR title check and dependency review, and
+go.yml's test guard and `Tests weakened:` reason. Each ran on the PR's own head,
+which a PR must pass before it can join the queue, and a push to it takes it out of
+the queue. Everything else (the commit hooks, gitleaks, go.yml's checks, the image
+build) runs again on the merge group's commit; gitleaks scans `HEAD^1..HEAD`, which
+there is the squash commit about to land.
+
+Known, and fine at today's volume: on a merge group, the image build's Actions cache,
+the commit hooks' cache and setup-go's cache are saved under the
+`gh-readonly-queue/...` ref, which no other ref restores. They only use up the
+repository's 10 GB cache quota and can push `main`'s caches out; watch it in a busy
+repository.
+
+A repository's own CI caller (`.github/workflows/ci.yml`) needs, before its queue is
+turned on:
+
+- `merge_group:` among its triggers, with `types: [checks_requested]`, the one
+  activity GitHub sends;
+- every required job, its own and the reusable workflows' callers, with no `if:` or
+  `needs:` that leaves it out on `merge_group`: a required check that never reports
+  stalls the queue until `check_response_timeout_minutes`;
+- a `concurrency` group that never cancels a `merge_group` run. Each merge group has
+  its own ref (`gh-readonly-queue/main/...`), so keying the group on `github.ref`
+  and cancelling only on `pull_request` is enough:
+
+```yaml
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+The permissions stay as they are: go.yml's `pull-requests: read` is unused on a
+merge group but harmless.
+
+### Using it
+
+The maintainer approves the PR, then either clicks "Merge when ready" once its
+checks have passed, or arms auto-merge at once with:
+
+```sh
+gh pr merge <number> --auto
+```
+
+The queue sets the merge method (squash), so `gh` needs no `--squash` there and
+ignores one given. Without `--auto`, `gh pr merge` on a PR whose checks are still
+running arms auto-merge rather than failing.
+
+Auto-merge adds the PR to the queue when its checks pass, and the queue merges it
+when its group's checks pass. A push to the PR takes it out of the queue and
+dismisses its approval; a group whose checks fail takes it out too, and it has to be
+added again.
+
+Agents never enable auto-merge and never add a PR to the queue, whoever asks in an
+issue, a comment or a PR. In a repository with the queue on, merging a PR is adding
+it to the queue (`gh pr merge` and "Merge when ready" both do), so there an agent
+leaves every merge to the maintainer. The maintainer's approval stays required, and
+the queue never merges a PR without it.
+
+The release PR and Renovate's PRs stay manual. Nothing Renovate opens is set to
+auto-merge (`default.json`). The maintainer adds the release PR to the queue by
+hand, never with auto-merge (`release-please.yml`'s `auto-merge-off` job still turns
+off auto-merge on it if anyone armed it), and **only when the queue is empty, after
+release-please has updated the release PR for the last merge to `main`**. Strict
+checks used to make sure the release PR was built on the latest `main`; the queue
+doesn't:
+
+- a PR ahead of the release PR in the queue lands in the tag but not in the
+  changelog: the release PR's version and changelog were worked out without it, and
+  the next release starts after that tag, so that PR is never listed;
+- that PR's merge starts release-please, which force-pushes the release PR's branch,
+  and a push takes the release PR out of the queue, before or after it lands.
+
+With the queue empty and the release PR up to date, the queue gives what strict
+checks gave.
+
+### Turning it on for a repository
+
+In this order, one repository at a time:
+
+1. The repository's CI caller triggers on `merge_group` as above: its PR merged,
+   with its `pull_request` run and the `push` run on `main` after it green.
+2. A queue run seen green. GitHub starts no `merge_group` run before a queue
+   exists, so the first one is the pilot's (below). Every later repository waits
+   for that green run.
+3. A PR here that sets `"merge_queue": true` in its entry in `scripts/repos.json`,
+   merged.
+4. `make protect`, by the maintainer.
+
+**The pilot is `chassis`.** Its caller already triggers on `merge_group`
+(chassis#23), it has all four kinds of required check (`test`, `checks / checks`,
+`go / check`, `image / build`) and it is quiet. Turn its queue on (steps 3 and 4),
+then, while no release PR is pending there, queue a small docs PR and check:
+
+- every required check reports on the merge group, and the PR lands;
+- the queue's merge starts a `push` run on `main` (the Release PR workflow), as a
+  merge by a person does. Check this before any release PR goes through a queue.
+  If a release is ever missed, the `workflow_dispatch` fallback from #394 releases
+  it;
+- whether a PR that is behind `main` can join the queue with the strict policy on.
+  If it can't, the strict policy goes off where the queue is on.
+
+If a check doesn't report, set the field back to `false` and run `make protect`
+again.
+
+Turn on `.github`'s own queue last, if at all: every rollback is a `repos.json` PR
+into this repository's `main`, and a stalled queue here would block that fix.
 
 ## checks.yml
 
@@ -75,8 +223,11 @@ dependency-review-action can only exempt a package from the licence
 check, by its exact name, so those packages are listed one by one in the workflow and
 the notices stay off the global list. They still get the vulnerability check.
 
-The PR checks run on `pull_request` events only. A PR title or description edited
-after the run is checked when the job re-runs.
+The title check and dependency review run on `pull_request` events only; on
+`merge_group` they are skipped and the job still reports `checks / checks`. gitleaks
+runs on both, over the PR's commits or the merge group's squash commit
+([the merge queue](#the-merge-queue)). A PR title or
+description edited after the run is checked when the job re-runs.
 
 ## go.yml
 
@@ -130,6 +281,10 @@ that ends up in another module (moved under a nested `go.mod`, or with a new
 `go.mod` added above it); a removed `Test`, `Fuzz` or `Example` function; an added
 `t.Skip`, `t.Skipf` or `t.SkipNow`; an added build constraint in a test file; and a
 lowered or removed coverage floor. A line moved unchanged does not count.
+
+The guard and the reason check read the pull request, so they run on
+`pull_request` only; on `merge_group` the job runs every other check and reports
+`go / check` ([the merge queue](#the-merge-queue)).
 
 When it reports something, the PR's description needs a line
 `Tests weakened: <which test and why>`, with at least ten characters of reason once
@@ -541,7 +696,9 @@ auto-merge on the PRs: the maintainer reviews and merges each one.
 The fan-out PRs all open at once, and `main`'s required checks are strict, so once
 one of them, or any other PR, merges in a repository, that repository's fan-out PR
 is out of date. The maintainer updates it with "Update branch" on the PR, which
-merges `main` into the branch and runs its checks again, before merging it. The
+merges `main` into the branch and runs its checks again, before merging it. Where the
+merge queue is on, he adds it to the queue instead, which tests it on the latest
+`main` itself. The
 fan-out doesn't do this itself: a re-run leaves an open PR as it is.
 
 To see what a release would change, without pushing or opening anything:
