@@ -26,6 +26,12 @@ name: Checks
 # versions and Renovate bumps them in one place. The commit hooks on every file
 # are the caller's own, from its .pre-commit-config.yaml.
 #
+# On `merge_group` (a caller that triggers on it, for a merge queue), the job runs
+# and reports under the same name; the steps that read the pull request run on
+# `pull_request` only and are skipped there, since each ran on the PR's own head
+# before it could join the queue; gitleaks scans the merge group's commit too
+# (tests/test_merge_group.py).
+#
 # Changing an input (adding a required one, removing or renaming one, or changing
 # a default's meaning) is a breaking change: see AGENTS.md.
 on:
@@ -209,9 +215,12 @@ jobs:
 
       # The commit hook scans only what is staged, so a commit made with --no-verify,
       # outside Claude Code or on the web would pass it: scan every commit in the PR.
-      # HEAD is the PR's merge commit, so HEAD^1..HEAD is the PR's commits.
+      # HEAD is the PR's merge commit, so HEAD^1..HEAD is the PR's commits. On a
+      # merge group (a merge queue), HEAD is the squash commit about to land on
+      # `main`, so the same range scans it once more: each PR's own run has already
+      # scanned its commits, and this costs a few seconds.
       - name: No secrets in the PR's commits
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           TOOLING: ${{ steps.tooling.outputs.dir }}
         run: pre-commit run gitleaks-pr --hook-stage manual --config "$TOOLING/.pre-commit-config.yaml"

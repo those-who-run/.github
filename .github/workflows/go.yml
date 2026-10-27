@@ -23,6 +23,11 @@ name: Go
 # caller pinned, never from the PR being checked, so a PR can't edit the checks that
 # judge it. The guard and the reason check run before any of the PR's code.
 #
+# On `merge_group` (a caller that triggers on it, for a merge queue), the job runs
+# and reports under the same name. The test guard and the reason check read the pull
+# request and run on `pull_request` only; every other check runs on the merge group's
+# commit (tests/test_merge_group.py).
+#
 # Changing an input (adding a required one, removing or renaming one, or changing
 # a default's meaning) is a breaking change: see AGENTS.md.
 on:

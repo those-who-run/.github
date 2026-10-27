@@ -13,6 +13,10 @@ name: Image
 #            labels, annotations, provenance and SBOM, records its digest, smoke-tests
 #            it and uploads it. With the caller job named `image`, the PR check is
 #            `image / build`. Reads the repository, nothing more.
+#
+# Nothing here reads the pull request, so on `merge_group` (a caller that triggers on
+# it, for a merge queue) the build runs as on a PR, on the merge group's commit
+# (tests/test_merge_group.py).
 on:
   workflow_call:
     inputs:
