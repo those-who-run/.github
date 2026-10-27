@@ -144,6 +144,11 @@ What the preset decides (those-who-run/paddock#22):
   repository, one PR per dependency, outside the schedule and the cooldown. The
   app needs read access to Dependabot alerts for this.
 - Nothing is auto-merged. Code-owner review applies to Renovate's PRs as to any.
+- `rebaseWhen` is left at Renovate's default, `auto`. With auto-merge off, `auto`
+  rebases a PR whenever it falls behind its base branch if the base branch requires
+  up-to-date branches, and only when it is conflicted otherwise. Renovate reads the
+  `main` ruleset's strict status checks for this (from 41.122.0), so its weekly PR
+  stays up to date with `main` without a setting here.
 - Actions are pinned by commit SHA with the full tag in a comment; pre-commit hooks
   keep their SHA and `# frozen:` tag; Go updates run `go mod tidy` and, for a major
   version, rewrite the import paths.
@@ -170,6 +175,18 @@ and the release App's numeric App ID (`release_app_id`).
 `scripts/protect-repo.sh` applies it. A new repository, or a check that a repository
 starts to require, is a change to that list in a PR; the maintainer merges it and
 runs `make protect`. Agents never run it: it changes repository settings.
+
+In every repository the `main` ruleset's required checks are strict
+(`strict_required_status_checks_policy: true`): a pull request's branch must be up
+to date with `main` before it merges. Two PRs, each green on its own head, once left
+`main` failing to compile after both were merged, because one renamed a function the
+other's tests called. With strict checks the second PR has to take in the first and
+pass its checks again. The list has no field for it: every repository takes it, and
+`make protect-check` reports a `main` ruleset where it is off. When `main` moves, an
+open PR waits for "Update branch" (or a rebase by its author) and a new run of its
+checks; that push dismisses an earlier approval, as any push does. An agent whose
+PR falls behind updates its branch from `origin/main` with a new commit and never
+force-pushes.
 
 A publishing repository may also set `prevent_self_review`, which is false when left
 out. It stays off while the maintainer is the only reviewer of the `release`
@@ -234,7 +251,9 @@ files too. The branch is `chore/github-vX.Y.Z` and the title
 `ci: those-who-run/.github vX.Y.Z`. It runs as the release App, so each PR starts
 the repository's CI, a re-run opens no second PR, and an open fan-out PR for an
 earlier release is closed in favour of the new one. Nothing merges them: the
-maintainer reviews and merges each one. The job's summary lists each repository's
+maintainer reviews and merges each one. They open together, and `main`'s checks are
+strict, so once one PR merges in a repository its fan-out PR is out of date; the
+maintainer brings it up to date with "Update branch" before merging it. The job's summary lists each repository's
 result, and the job fails if any repository failed. The App needs the Contents, Pull
 requests and Workflows permissions (read and write) and to be installed on every
 listed repository

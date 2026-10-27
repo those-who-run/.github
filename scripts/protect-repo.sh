@@ -23,6 +23,8 @@
 #   checks       status checks `main` must pass, from GitHub Actions only, each name a
 #                string as GitHub reports it: `test`, or `checks / checks` for a
 #                reusable workflow's job (`<caller job> / <reusable job>`). [] for none.
+#                The checks are strict in every repository: a pull request's branch
+#                must be up to date with `main` before it merges.
 #   actions      whether Actions is on.
 #   approvals    approving reviews a pull request needs (see --approvals).
 #   code_owners  require a code owner's approval (see --code-owners).
@@ -535,6 +537,12 @@ protect() {
   # approvals are required. With reviews
   # required, an approval is dropped by a later push and must come after it.
   # 15368 is the GitHub Actions app: only its runs can satisfy a required check.
+  # The checks are strict: a pull request's branch must be up to date with `main`
+  # before it merges, so its checks have run against the `main` it merges into. Two
+  # PRs each green on their own head can still break `main` once both are merged
+  # (one renames what the other's tests call); strict makes the second update and
+  # run its checks again first. Every repository takes it, the list has no field
+  # for it, and a one-off with --checks takes it too.
   approvals=$(jq .approvals <<<"$cfg")
   fresh=$([ "$approvals" -gt 0 ] && echo true || echo false)
   checks=$(jq -c '[.checks[] | {context: ., integration_id: 15368}]' <<<"$cfg")
@@ -548,7 +556,7 @@ protect() {
          require_last_push_approval: $fresh, required_review_thread_resolution: false,
          allowed_merge_methods: ["squash"]}}]
        + if ($checks | length) > 0 then [{type: "required_status_checks", parameters: {
-           strict_required_status_checks_policy: false, do_not_enforce_on_create: false,
+           strict_required_status_checks_policy: true, do_not_enforce_on_create: false,
            required_status_checks: $checks}}] else [] end)}')"
 
   # Release tags: nobody moves or deletes one, with no bypass at all. Creating one is
