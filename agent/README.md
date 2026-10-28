@@ -61,6 +61,17 @@ policy.
   or a PR is in the queue it merges without a further ask. The guard reads a query
   given inline (`-f query=...`, `-F query=...`); a GraphQL request it reads from a
   file or stdin (`--input`, `-F query=@file`, `-F query=@-`) asks whatever it holds.
+- **Reads `gh api` endpoints the way gh does**, before any rule on them: a full URL to
+  `api.github.com` (in any case), or to a GitHub Enterprise Server's `/api/v3/` or
+  `/api/graphql`, meets the same rules as its path, as does a path with a leading `/`,
+  a `?query` or a `#fragment`. A write to any other full URL asks; a GraphQL mutation
+  the guard blocks still blocks there.
+- **Asks about values it can't read before they run**: a `gh api` endpoint, or any
+  field of a `gh api graphql` call, holding a shell expansion (`$VAR`, `${...}`,
+  `$(...)`, backquotes) that the command doesn't set itself. A variable the command
+  sets (`q='...'; gh api graphql -f query="$q"`) is read, a mutation the guard can
+  still see decides as usual, and text in single quotes (a GraphQL `$owner`) and
+  gh's own placeholders (`{owner}`, `{repo}`) are literal.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is
   blocked, with the reason, until the file is fixed; the Read and Edit tools still

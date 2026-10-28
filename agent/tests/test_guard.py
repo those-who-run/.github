@@ -359,6 +359,109 @@ AUTO_MERGE_READS = [
     "cat <<'EOF' > notes.md\ngh api graphql -f query='mutation { enqueuePullRequest }'\nEOF",
 ]
 
+MERGE = "mutation { mergePullRequest(input: {}) { clientMutationId } }"
+AUTO_MERGE = "mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"
+
+# (command, verdict, rule): endpoints read as gh reads them, a full URL included.
+ENDPOINTS = [
+    (f"gh api https://api.github.com/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api HTTPS://API.GitHub.com/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api http://api.github.com/graphql -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api 'graphql#x' -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api 'graphql?x=1#y' -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api /graphql -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api graphql/ -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://api.github.com/graphql#x -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://ghe.example.com/api/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api https://ghe.example.com/API/GraphQL -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://example.com/x -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api https://example.com/x -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    ("gh api -X POST https://uploads.github.com/repos/o/r/releases/1/assets", "ask", "gh-api"),
+    ("gh api -X PUT https://example.com/repos/o/r/pulls/1/merge", "ask", "gh-api"),
+    ("gh api -X PUT ftp://api.github.com/repos/o/r/pulls/1/merge", "ask", "gh-api"),
+]
+
+# (short form, the same request by another endpoint): the same verdict, rule and reason.
+SAME_ENDPOINT = [
+    (f"gh api -X PUT {short}", f"gh api -X PUT {other}")
+    for short, other in [
+        ("repos/o/r/pulls/1/merge", "https://api.github.com/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "HTTPS://Api.GitHub.Com/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "https://ghe.example.com/api/v3/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "'repos/o/r/pulls/1/merge#x'"),
+        ("repos/o/r/pulls/1/merge", "/repos/o/r/pulls/1/merge?x=1"),
+        ("repos/o/r/pulls/1/merge", "https://api.github.com/repos/o/r/pulls/1/merge#x"),
+        ("repos/o/r", "https://api.github.com/repos/o/r"),
+    ]
+] + [
+    (
+        "gh api repos/o/r/issues/1/comments -f body=hi",
+        "gh api https://api.github.com/repos/o/r/issues/1/comments -f body=hi",
+    ),
+]
+
+# (command, verdict): an expansion the guard can't resolve in the endpoint or in a
+# GraphQL call's field. A mutation it can still see decides; otherwise it asks.
+UNRESOLVED = [
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -f query="${Q}"',
+    "gh api graphql -f query=$Q",
+    'gh api graphql -f "query=$Q"',
+    "gh api graphql --field=query=$Q",
+    "gh api graphql -fquery=$Q",
+    "gh api graphql --raw-field query=\"$Q\"",
+    'gh api graphql -f query="$(cat q.graphql)"',
+    "gh api graphql -f query=`cat q.graphql`",
+    "gh api graphql -f query=\"$1\"",
+    "gh api graphql -F id=\"$ID\" -f query='query { viewer { login } }'",
+    "gh api graphql -F \"$K=x\" -f query='query { viewer { login } }'",
+    "Q=$(cat q.graphql); gh api graphql -f query=\"$Q\"",
+    "gh api \"$EP\" -f query='query { viewer { login } }'",
+    "gh api \"${EP}\" --input body.json",
+    "gh api -X PUT \"repos/o/r/pulls/$N/merge\"",
+    "gh api -X POST \"$(echo repos/o/r/issues)\"",
+    "gh api -X PUT repos/o/r/pulls/`echo 1`/merge",
+]
+
+UNRESOLVED_SEEN = [
+    (
+        'gh api graphql -f query="mutation { mergePullRequest(input: {id: \\"$ID\\"}) { x } }"',
+        "block",
+        "gh-api",
+    ),
+    (f"gh api \"$EP\" -f query='{MERGE}'", "block", "gh-api"),
+    (
+        'gh api graphql -f query="mutation { enqueuePullRequest(input: {id: \\"$ID\\"}) { x } }"',
+        "ask",
+        "gh-auto-merge",
+    ),
+    (f"gh api \"$EP\" -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    # A variable the command sets itself is read.
+    (f"q='{MERGE}'; gh api graphql -f query=\"$q\"", "block", "gh-api"),
+    (f"q='{AUTO_MERGE}'; gh api graphql -f query=\"$q\"", "ask", "gh-auto-merge"),
+    (f"export EP=graphql; gh api $EP -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    ("N=1; gh api -X PUT repos/o/r/pulls/$N/merge", "block", "gh-api"),
+]  # fmt: skip
+
+# Literal read calls, and values that only look like an expansion or a file: these pass.
+LITERAL_READS = [
+    "gh api graphql -F owner={owner} -F name={repo} -f query='query($owner: String!, "
+    "$name: String!) { repository(owner: $owner, name: $name) { autoMergeAllowed } }'",
+    "gh api graphql -f query='query { viewer { login } }'",
+    'gh api graphql -f query="query { viewer { login } }"',
+    "gh api graphql -f query=\\$Q",
+    "gh api graphql -f query=$'query { viewer { login } }'",
+    "gh api graphql -F email=a@example.com -f query='query { viewer { login } }'",
+    "gh api graphql -F count=5 -F draft=true -f query='query { viewer { login } }'",
+    "q='query { viewer { login } }'; gh api graphql -f query=\"$q\"",
+    "gh api https://api.github.com/repos/o/r/pulls/1",
+    "gh api https://example.com/x",
+    'gh api "repos/$OWNER/r/pulls"',
+    "gh api \"$EP\"",
+    "gh api -X GET graphql -f query=\"$Q\"",
+    "gh api -X POST repos/{owner}/{repo}/statuses/abc -f state=success",
+]
+
 GITHUB_READS = [
     "gh issue view 1",
     "gh pr view 1 --comments",
@@ -605,6 +708,93 @@ class AutoMergeAndTheMergeQueue(GuardTest):
                 verdict = self.verdict(command)
                 self.assertEqual((verdict.level, verdict.rule), (guard.ASK, "gh-pr-merge"))
                 self.assertEqual(verdict.reason, "merging is the maintainer's decision")
+
+
+class Endpoints(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def assert_verdicts(self, cases):
+        for command, expected, rule in cases:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+                self.assertEqual(self.verdict(command).rule, rule)
+
+    def test_an_endpoint_is_read_as_gh_reads_it(self):
+        self.assert_verdicts(ENDPOINTS)
+
+    def test_a_full_url_meets_the_rules_of_its_path(self):
+        for short, other in SAME_ENDPOINT:
+            with self.subTest(command=other):
+                self.assertNotEqual(self.verdict(short).level, guard.ALLOW)
+                self.assertEqual(self.verdict(other), self.verdict(short))
+
+    def test_the_paths(self):
+        cases = {
+            "graphql": "graphql",
+            "/graphql": "graphql",
+            "graphql#x": "graphql",
+            "graphql?a=1": "graphql",
+            "repos/o/r?a=1#b": "repos/o/r",
+            "https://api.github.com/repos/o/r": "repos/o/r",
+            "HTTPS://API.GITHUB.COM/graphql": "graphql",
+            "https://api.github.com": "",
+            "https://ghe.example.com/api/v3/repos/o/r": "repos/o/r",
+            "https://ghe.example.com/api/graphql": "graphql",
+            "https://ghe.example.com/api/graphql#x": "graphql",
+            "https://example.com/repos/o/r": None,
+            "https://uploads.github.com/repos/o/r": None,
+            "https://api.github.com.example.com/repos/o/r": None,
+            "git://api.github.com/repos/o/r": None,
+            "api.github.com/repos/o/r": "api.github.com/repos/o/r",
+        }
+        for endpoint, path in cases.items():
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(guard.api_path(endpoint), path)
+
+
+class UnresolvedValues(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def test_a_value_the_guard_cannot_read_asks(self):
+        for command in UNRESOLVED:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), "ask")
+                self.assertIn("can't read before it runs", self.verdict(command).reason)
+
+    def test_what_the_guard_can_still_see_decides(self):
+        for command, expected, rule in UNRESOLVED_SEEN:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+                self.assertEqual(self.verdict(command).rule, rule)
+
+    def test_literal_reads_pass(self):
+        self.assert_decisions("allow", LITERAL_READS)
+
+    def test_the_words_that_expand(self):
+        cases = {
+            "x": False,
+            "'$x'": False,
+            "$'$x'": False,
+            "\\$x": False,
+            "a$": False,
+            "{owner}": False,
+            "$x": True,
+            '"$x"': True,
+            '"${x}"': True,
+            "$1": True,
+            '"$@"': True,
+            "'a'$x": True,
+            "$(x)": True,
+            '"$(x)"': True,
+            "`x`": True,
+            '"`x`"': True,
+        }
+        for word, expands in cases.items():
+            with self.subTest(word=word):
+                (cmd,) = guard.parse(f"echo {word}")
+                self.assertIs(isinstance(cmd.words[1], guard.Unresolved), expands)
 
 
 class AskReasons(GuardTest):

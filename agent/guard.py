@@ -472,6 +472,8 @@ FILE_WRITERS = {
 # A redirection that writes its target.
 WRITE_REDIRECTIONS = {">", ">>", ">|", "&>", "&>>", "<>", ">&"}
 VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+# A parameter expansion: $name, ${...}, or a special parameter such as $1 or $@.
+PARAMETER = re.compile(r"\$([A-Za-z_{]|[0-9@*#?$!-])")
 
 
 def expand(word: str, env: dict[str, str]) -> str:
@@ -605,7 +607,7 @@ def gh_rule(args: list[str], env: dict[str, str]) -> Verdict:
             ask("gh-run-rerun", say("re-running a run can re-run a release ({workflow})"))
         )
     if cmd == "api":
-        verdicts.append(gh_api_rule(args))
+        verdicts.append(gh_api_rule(args, env))
     if (cmd, sub) in GH_ASK:
         why = GH_ASK_WHY.get((cmd, sub), "it posts in public")
         verdicts.append(ask(f"gh-{cmd}-{sub}", why))
@@ -618,8 +620,46 @@ def gh_rule(args: list[str], env: dict[str, str]) -> Verdict:
     return worst(verdicts)
 
 
-def gh_api_rule(args: list[str]) -> Verdict:
+def readable(word: str, env: dict[str, str]) -> str | None:
+    """The word as the shell will pass it, or None when an expansion in it can't be
+    resolved from what the command itself sets."""
+    if not isinstance(word, Unresolved):
+        return word
+    text = expand(word, env)
+    return None if PARAMETER.search(text) or "$(" in text or "`" in text else text
+
+
+# A full URL that gh sends to as it is: the GitHub API's host, or a GitHub Enterprise
+# Server's /api/v3/ and /api/graphql.
+GH_API_URL = re.compile(r"^https?://(?P<host>[^/]+)(?P<path>/.*)?$", re.I)
+
+
+def api_path(endpoint: str) -> str | None:
+    """The path `gh api` sends a request to, as gh reads its endpoint argument (a full
+    URL as it is, anything else under the API's root), or None for a URL the guard
+    can't map to one."""
+    target = re.split(r"[?#]", endpoint, maxsplit=1)[0]
+    if "://" not in endpoint:
+        return target.lstrip("/")
+    m = GH_API_URL.match(target)
+    if m is None:
+        return None
+    host, path = m.group("host").lower(), m.group("path") or ""
+    if host == "api.github.com":
+        return path.lstrip("/")
+    if path.lower().startswith("/api/v3/"):
+        return path[len("/api/v3/") :].lstrip("/")
+    if path.lower().rstrip("/") == "/api/graphql":
+        return "graphql"
+    return None
+
+
+UNREADABLE = "a value the guard can't read before it runs"
+
+
+def gh_api_rule(args: list[str], env: dict[str, str]) -> Verdict:
     endpoint, method, fields, has_input, i = None, None, [], False, 0
+    unreadable = False  # a field with an expansion the guard can't resolve
     while i < len(args):
         a = args[i]
         name, eq, attached = a.partition("=")
@@ -636,7 +676,14 @@ def gh_api_rule(args: list[str]) -> Verdict:
         if name in ("-X", "--method"):
             method = (value or "").upper()
         elif name in ("-f", "--raw-field", "-F", "--field"):
-            fields.append(value or "")
+            value = value or ""
+            # args[i] is the word the value came from, whether attached or separate.
+            text = readable(args[i], env)
+            if text is None:
+                unreadable = True
+            else:
+                value = text[len(args[i]) - len(value) :]
+            fields.append(value)
             # A typed field's `@file` (or `@-`, stdin) is read by gh, not seen here.
             if name in ("-F", "--field") and (value or "").partition("=")[2].startswith("@"):
                 has_input = True
@@ -649,35 +696,50 @@ def gh_api_rule(args: list[str]) -> Verdict:
         method = "POST" if fields or has_input else "GET"
     if endpoint is None or method in ("GET", "HEAD"):
         return ALLOWED
-    path = endpoint.split("?", 1)[0].lstrip("/")
-    if path == "graphql":
-        query = " ".join(fields)
-        m = GH_GRAPHQL_PROTECTED.search(query)
-        if m:
-            return block(
-                "gh-api", f"the GraphQL mutation {m.group(0)} does what a blocked command does"
-            )
-        m = GH_GRAPHQL_AUTO_MERGE.search(query)
-        if m:
-            return ask(
-                "gh-auto-merge",
-                f"{m.group(0)}: turning on auto-merge or adding to the merge queue merges "
-                "without a further ask; the maintainer decides",
-            )
-        m = GH_GRAPHQL_POSTS.search(query)
-        if m:
-            return ask("gh-api", f"{m.group(0)} posts in public")
-        if has_input:
-            return ask(
-                "gh-api", "a GraphQL request from a file or stdin, which the guard can't read"
-            )
-        return ALLOWED
+    target = readable(endpoint, env)
+    path = None if target is None else api_path(target)
+    if path is None:
+        # Where it goes is unknown, so it is checked as GraphQL too: a mutation that
+        # blocks still blocks, auto-merge asks as itself, and anything else asks.
+        verdict = graphql_rule(" ".join(fields), has_input, unreadable)
+        if verdict.level == BLOCK or verdict.rule == "gh-auto-merge":
+            return verdict
+        if target is None:
+            return ask("gh-api", f"the endpoint is {UNREADABLE}")
+        return ask("gh-api", f"{target} is a URL the guard can't map to an API path")
+    if path.rstrip("/") == "graphql":
+        return graphql_rule(" ".join(fields), has_input, unreadable)
     if GH_API_PROTECTED.match(path):
         return block(
             "gh-api", f"{method} {path} changes the repository's settings, releases or refs"
         )
     if GH_API_POSTS.match(path):
         return ask("gh-api", f"{method} {path} posts in public")
+    return ALLOWED
+
+
+def graphql_rule(query: str, has_input: bool, unreadable: bool) -> Verdict:
+    m = GH_GRAPHQL_PROTECTED.search(query)
+    if m:
+        return block(
+            "gh-api", f"the GraphQL mutation {m.group(0)} does what a blocked command does"
+        )
+    m = GH_GRAPHQL_AUTO_MERGE.search(query)
+    if m:
+        return ask(
+            "gh-auto-merge",
+            f"{m.group(0)}: turning on auto-merge or adding to the merge queue merges "
+            "without a further ask; the maintainer decides",
+        )
+    m = GH_GRAPHQL_POSTS.search(query)
+    if m:
+        return ask("gh-api", f"{m.group(0)} posts in public")
+    if unreadable:
+        return ask("gh-api", f"the GraphQL request has {UNREADABLE}")
+    if has_input:
+        return ask(
+            "gh-api", "a GraphQL request from a file or stdin, which the guard can't read"
+        )
     return ALLOWED
 
 
@@ -942,6 +1004,12 @@ class Token:
     text: str
     subs: list[str] = field(default_factory=list)  # $(...), `...` and <(...) inside it
     heredoc: str | None = None  # the body of a << here-document
+    expands: bool = False  # it has a $VAR, ${...}, $(...) or `...` outside single quotes
+
+
+class Unresolved(str):
+    """A word with a shell expansion in it: its text is what the command says, not what
+    the shell will pass."""
 
 
 @dataclass
@@ -1066,21 +1134,22 @@ def tokenize(text: str) -> list[Token]:
     subs: list[str] = []
     in_word = False
     quoted = False  # whether the current word has quotes or backslashes in it
+    expands = False  # whether it has an expansion outside single quotes
     pending: list[tuple[Token, str, bool, bool]] = []  # here-documents awaiting a body
     expect_delimiter: Token | None = None
     i, n = 0, len(text)
 
     def end_word() -> None:
-        nonlocal word, subs, in_word, quoted, expect_delimiter
+        nonlocal word, subs, in_word, quoted, expands, expect_delimiter
         if in_word:
-            tok = Token("word", "".join(word), subs)
+            tok = Token("word", "".join(word), subs, expands=expands)
             if expect_delimiter is not None:
                 strip_tabs = expect_delimiter.text == "<<-"
                 pending.append((expect_delimiter, tok.text, strip_tabs, quoted))
                 expect_delimiter = None
             else:
                 tokens.append(tok)
-        word, subs, in_word, quoted = [], [], False, False
+        word, subs, in_word, quoted, expands = [], [], False, False, False
 
     def read_heredocs(i: int) -> int:
         for tok, delim, strip_tabs, delim_quoted in pending:
@@ -1178,13 +1247,16 @@ def tokenize(text: str) -> list[Token]:
                     inner, k = read_balanced(text, j + 2)
                     subs.append(inner)
                     word.append(text[j:k])
+                    expands = True
                     j = k
                 elif d == "`":
                     inner, k = read_backquoted(text, j + 1)
                     subs.append(inner)
                     word.append(text[j:k])
+                    expands = True
                     j = k
                 else:
+                    expands = expands or PARAMETER.match(text, j) is not None
                     word.append(d)
                     j += 1
             i = j + 1
@@ -1192,13 +1264,16 @@ def tokenize(text: str) -> list[Token]:
             inner, k = read_balanced(text, i + 2)
             subs.append(inner)
             word.append(text[i:k])
+            expands = True
             i = k
         elif c == "`":
             inner, k = read_backquoted(text, i + 1)
             subs.append(inner)
             word.append(text[i:k])
+            expands = True
             i = k
         else:
+            expands = expands or PARAMETER.match(text, i) is not None
             word.append(c)
             i += 1
     end_word()
@@ -1230,7 +1305,7 @@ def parse(text: str) -> list[Command]:
                 if tok.text == "<<<":
                     cmd.stdin_scripts.append(tokens[i].text)
         else:
-            cmd.words.append(tok.text)
+            cmd.words.append(Unresolved(tok.text) if tok.expands else tok.text)
             cmd.subs.extend(tok.subs)
         i += 1
     if cmd.words or cmd.subs or cmd.stdin_scripts or cmd.redirects:
