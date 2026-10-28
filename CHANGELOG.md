@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/those-who-run/.github/compare/v0.2.12...v0.2.13) (2026-10-28)
+
+
+### Features
+
+* **guard:** ask before auto-merge and the merge queue ([#53](https://github.com/those-who-run/.github/issues/53)) ([410751d](https://github.com/those-who-run/.github/commit/410751dc1cd2546819aaf3b13a9815ce18dd2451))
+
 ## [0.2.12](https://github.com/those-who-run/.github/compare/v0.2.11...v0.2.12) (2026-10-28)
 
 
