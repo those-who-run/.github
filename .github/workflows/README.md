@@ -167,6 +167,12 @@ then, while no release PR is pending there, queue a small docs PR and check:
 - whether a PR that is behind `main` can join the queue with the strict policy on.
   If it can't, the strict policy goes off where the queue is on.
 
+It ran on 2026-10-28 and passed all three: chassis#25 merged through the queue
+with every required check green on `merge_group`, and its merge started the `push`
+runs on `main`; chassis#27, one commit behind `main` after chassis#26, joined the
+queue with no "Update branch" and merged. So the strict policy stays on, and every
+repository but `.github` has the queue.
+
 If a check doesn't report, set the field back to `false` and run `make protect`
 again.
 

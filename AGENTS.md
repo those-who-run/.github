@@ -202,8 +202,8 @@ account isn't a reviewer. Turn it on once there is a second reviewer.
 
 ### The merge queue
 
-A repository may set `merge_queue`, which is false when left out and true only in
-`chassis` today, the pilot. With it, `protect-repo.sh` adds a `merge_queue` rule to the `main`
+A repository may set `merge_queue`, which is false when left out and true in every
+repository but `.github` today. With it, `protect-repo.sh` adds a `merge_queue` rule to the `main`
 ruleset (squash, every PR in a group green, a 60 min timeout for each required
 check; [`.github/workflows/README.md`](.github/workflows/README.md#the-merge-queue)
 has every parameter), and `make protect-check` reports drift on it. The strict
