@@ -5,3 +5,7 @@ __pycache__/
 !.claude/guard.json
 !.claude/hooks/
 build/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
