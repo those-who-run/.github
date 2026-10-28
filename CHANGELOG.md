@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.14](https://github.com/those-who-run/.github/compare/v0.2.13...v0.2.14) (2026-10-28)
+
+
+### Features
+
+* **python:** python.yml, the language checks for a Python repository ([#58](https://github.com/those-who-run/.github/issues/58)) ([b58b641](https://github.com/those-who-run/.github/commit/b58b64176283ef734e139fb5f51fd53079d76b0f))
+
 ## [0.2.13](https://github.com/those-who-run/.github/compare/v0.2.12...v0.2.13) (2026-10-28)
 
 
