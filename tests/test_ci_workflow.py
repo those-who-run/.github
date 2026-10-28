@@ -1,10 +1,12 @@
 """Checks on this repository's own .github/workflows/ci.yml.
 
-ci.yml runs on pull requests and on pushes to main, nothing else. release-please's PR
-is opened by the organisation's release App, so it starts CI through `pull_request`
-like any other PR, and there is no dispatch on the release branch to allow. These
-tests check the triggers, and that the required jobs carry no `if:` or `needs:` that
-could leave them skipped.
+ci.yml runs on pull requests, on pushes to main and in the merge queue
+(`merge_group`), nothing else; a queue whose required checks never report never
+merges, and only a superseded PR run is cancelled. release-please's PR is opened by
+the organisation's release App, so it starts CI through `pull_request` like any
+other PR, and there is no dispatch on the release branch to allow. These tests check
+the triggers, and that the required jobs carry no `if:` or `needs:` that could leave
+them skipped.
 
 Standard library only (tests/workflow_yaml.py). CI's `test` job runs it:
 
@@ -60,9 +62,13 @@ class CiWorkflow(unittest.TestCase):
                 self.assertNotIn("if", job["keys"])
                 self.assertNotIn("needs", job["keys"])
 
-    def test_it_runs_on_pull_requests_and_main_only(self) -> None:
-        self.assertEqual(triggers(self.text), {"pull_request", "push"})
+    def test_it_runs_on_pull_requests_main_and_the_merge_queue_only(self) -> None:
+        self.assertEqual(triggers(self.text), {"pull_request", "merge_group", "push"})
+        self.assertIn("  merge_group:\n    types: [checks_requested]\n", self.text)
         self.assertIn("  push:\n    branches: [main]\n", self.text)
+
+    def test_only_a_superseded_pr_run_is_cancelled(self) -> None:
+        self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", self.text)
 
     def test_there_is_no_dispatch_on_a_release_branch(self) -> None:
         self.assertEqual(dispatch_problems(self.text), [])
