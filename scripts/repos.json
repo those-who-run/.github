@@ -80,15 +80,15 @@
       "codeql": ["go"]
     },
     "those-who-run/shakedown-fangio": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
       "actions_prs": false,
       "issues": false,
-      "publishes": false,
+      "publishes": true,
       "tags": ["v*"],
-      "codeql": []
+      "codeql": ["go"]
     },
     "those-who-run/radio": {
       "checks": ["test", "checks / checks"],
