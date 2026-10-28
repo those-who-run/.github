@@ -49,10 +49,49 @@ policy.
   as the bot account (the identity hook enforces it) and the bot's token can't write
   to the organisation's projects; an agent with the maintainer's login could. The
   tables in `guard.py` have the full list.
-- **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
-  including any `gh pr merge`), re-running a workflow run, acting on a repository
-  outside the organisation, and any command it can't follow that names `git`, `gh`,
-  `kubectl`, `oc`, `helm`, `docker`, `podman` or `pre-commit`.
+- **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes),
+  any `gh pr merge` (`--auto` and `--disable-auto` included), re-running a workflow
+  run, acting on a repository outside the organisation, and any command it can't
+  follow that names `git`, `gh`, `kubectl`, `oc`, `helm`, `docker`, `podman` or
+  `pre-commit`.
+- **Asks before auto-merge and the merge queue** (rule `gh-auto-merge`): a
+  `gh api graphql` call whose query uses `enablePullRequestAutoMerge`,
+  `disablePullRequestAutoMerge`, `enqueuePullRequest` or `dequeuePullRequest`, as
+  `gh pr merge` does. Merging is the maintainer's decision, and once auto-merge is on
+  or a PR is in the queue it merges without a further ask. The guard reads a query
+  given inline (`-f query=...`, `-F query=...`); a GraphQL request it reads from a
+  file or stdin (`--input`, `-F query=@file`, `-F query=@-`) asks whatever it holds.
+- **Reads `gh api` endpoints the way gh does**, before any rule on them: a full URL to
+  `api.github.com` (in any case), or to a GitHub Enterprise Server's `/api/v3/` or
+  `/api/graphql`, meets the same rules as its path, as does a path with a leading `/`,
+  a `?query` or a `#fragment`. A write to any other full URL asks; a GraphQL mutation
+  the guard blocks still blocks there.
+- **Asks about values it can't read before they run**: a `gh api` endpoint, or any
+  field of a `gh api graphql` call, holding a shell expansion that the guard doesn't
+  resolve. It resolves only a plain `$NAME` or `${NAME}` whose variable the command
+  line set with a plain `NAME=value` (or `export NAME=value`) it can read
+  (`q='...'; gh api graphql -f query="$q"`); a `${...}` with an operator, `$(...)`,
+  backquotes, `$'...'`, a glob or a brace expansion is never resolved, nor is a
+  variable named in a prefix assignment of the same command, or one set by `read`,
+  `for`, `declare`, `printf -v` and the like (also behind `command` or `builtin`), nor
+  any after an assignment to an array, an element or with `+=`, after `declare -n` or
+  `trap`, or on a command line that defines a function. `$(cat <<'EOF' ... EOF)` is
+  read as the here-document it prints, literal when its own delimiter is quoted, and
+  only when nothing in the whole command, here-document included and quotes aside
+  (`PA""TH`), defines `cat` as a function or alias, names PATH, or runs `hash`,
+  `enable`, `eval`, `source` or `.`. What the guard can still see
+  decides first: a GraphQL
+  mutation, and the REST rules, which it checks on the endpoint as written, a part
+  it can't read standing for any one path segment, so
+  `gh api -X PUT "repos/$O/$R/pulls/$N/merge"` blocks as the literal path does. Text
+  in single quotes (a GraphQL `$owner`) and gh's own placeholders (`{owner}`,
+  `{repo}`) are literal. Brace expansion counts with quoted parts too
+  (`{"graphql",}`). A `gh api` write with no endpoint the guard can see asks. `xargs`
+  or `parallel` running `gh api` asks, since its input may be flags, unless a
+  replacement string (`xargs -I{}`, `-i`, `--replace`, or parallel's `{}`) fixes where
+  the input goes and that is nowhere a flag could be; there the input is a value the
+  guard can't read. parallel with `{= ... =}`, `--rpl` or `--plus` running gh asks. `env` takes any `NAME=value` argument as an assignment, as env
+  does.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is
   blocked, with the reason, until the file is fixed; the Read and Edit tools still

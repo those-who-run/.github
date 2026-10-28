@@ -286,6 +286,8 @@ OUTWARD = [
     # the same, wrapped
     ("watch -n 5 'kubectl delete pod x'", "watch -n 5 'kubectl get pods'"),
     ("env KUBECONFIG=/x kubectl delete pod x", "env KUBECONFIG=/x kubectl get pods"),
+    ("env 'A%%=x' git push origin main", "env 'A%%=x' git push origin feat/x"),
+    ("env 'A B=x' bash -c 'gh release create v1'", "env 'A B=x' bash -c 'gh release list'"),
     ('echo "$(gh release create v1)"', 'echo "$(gh release list)"'),
 ]
 
@@ -300,6 +302,8 @@ ASKS = [
     "gh pr close 1",
     "gh pr merge 1 --squash",
     "gh pr merge 1 --squash --auto",
+    "gh pr merge 1 --auto",
+    "gh pr merge 1 --disable-auto",
     "gh pr ready 1",
     "bash -c 'gh issue comment 1 --body hi'",
     "gh api repos/{owner}/{repo}/issues/1/comments -f body=hi",
@@ -308,6 +312,407 @@ ASKS = [
     "gh issue view 1 --repo someone/else",
     "GH_REPO=someone/else gh issue list",
     "gh run rerun 123",
+]
+
+AUTO_MERGE_MUTATIONS = [
+    "enablePullRequestAutoMerge",
+    "disablePullRequestAutoMerge",
+    "enqueuePullRequest",
+    "dequeuePullRequest",
+]
+
+# The forms of `gh api graphql` whose query the guard reads, for a mutation `{m}`.
+READABLE_QUERIES = [
+    "gh api graphql -f query='mutation { {m}(input: {}) { clientMutationId } }'",
+    'gh api graphql -f query="mutation { {m}(input: {}) { clientMutationId } }"',
+    "gh api graphql -f query='mutation{{m}(input:{pullRequestId:\"x\"}){clientMutationId}}'",
+    "gh api graphql -f query='\nmutation {\n  {m}(\n    input: {}\n  ) { clientMutationId }\n}'",
+    "gh api graphql -F query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql --raw-field query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql --field=query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql -fquery='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api -X POST graphql -F id=x -f query='mutation($id: ID!) { {m}(input: {}) { x } }'",
+    "bash -c \"gh api graphql -f query='mutation { {m}(input: {}) { x } }'\"",
+    'echo "$(gh api graphql -f query=\'mutation { {m}(input: {}) { x } }\')"',
+]
+
+# The forms whose query gh reads from a file or stdin, which the guard can't see.
+UNREADABLE_QUERIES = [
+    "gh api graphql -F query=@mutation.graphql",
+    "gh api graphql --field query=@mutation.graphql -F id=x",
+    "gh api graphql -F query=@- <<'EOF'\nmutation { {m}(input: {}) { x } }\nEOF",
+    "gh api graphql --input request.json",
+    "gh api graphql --input - <<'EOF'\n{\"query\": \"mutation { {m}(input: {}) { x } }\"}\nEOF",
+]
+
+# Queries that read auto-merge and the merge queue, or only name them: these pass.
+AUTO_MERGE_READS = [
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ pullRequest(number: 1) { autoMergeRequest { enabledAt mergeMethod } } } }'",
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ mergeQueue { entries(first: 5) { nodes { position } } } } }'",
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ autoMergeAllowed } }'",
+    "gh api graphql -F owner=those-who-run -f query='query($owner: String!) { "
+    "organization(login: $owner) { login } }'",
+    "gh api graphql -f query=@mutation.graphql",
+    "gh api graphql -f query='query { x(first: 1) { enablePullRequestAutoMergeCount } }'",
+    "gh pr view 1 --json autoMergeRequest",
+    "cat <<'EOF' > notes.md\ngh api graphql -f query='mutation { enqueuePullRequest }'\nEOF",
+]
+
+MERGE = "mutation { mergePullRequest(input: {}) { clientMutationId } }"
+AUTO_MERGE = "mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"
+
+# (command, verdict, rule): endpoints read as gh reads them, a full URL included.
+ENDPOINTS = [
+    (f"gh api https://api.github.com/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api HTTPS://API.GitHub.com/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api http://api.github.com/graphql -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api 'graphql#x' -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api 'graphql?x=1#y' -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api /graphql -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api graphql/ -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://api.github.com/graphql#x -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://ghe.example.com/api/graphql -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api https://ghe.example.com/API/GraphQL -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    (f"gh api https://example.com/x -f query='{MERGE}'", "block", "gh-api"),
+    (f"gh api https://example.com/x -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    ("gh api -X POST https://uploads.github.com/repos/o/r/releases/1/assets", "ask", "gh-api"),
+    ("gh api -X PUT https://example.com/repos/o/r/pulls/1/merge", "ask", "gh-api"),
+    ("gh api -X PUT ftp://api.github.com/repos/o/r/pulls/1/merge", "ask", "gh-api"),
+]
+
+# (short form, the same request by another endpoint): the same verdict, rule and reason.
+SAME_ENDPOINT = [
+    (f"gh api -X PUT {short}", f"gh api -X PUT {other}")
+    for short, other in [
+        ("repos/o/r/pulls/1/merge", "https://api.github.com/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "HTTPS://Api.GitHub.Com/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "https://ghe.example.com/api/v3/repos/o/r/pulls/1/merge"),
+        ("repos/o/r/pulls/1/merge", "'repos/o/r/pulls/1/merge#x'"),
+        ("repos/o/r/pulls/1/merge", "'/repos/o/r/pulls/1/merge?x=1'"),
+        ("repos/o/r/pulls/1/merge", "https://api.github.com/repos/o/r/pulls/1/merge#x"),
+        ("repos/o/r", "https://api.github.com/repos/o/r"),
+    ]
+] + [
+    (
+        "gh api repos/o/r/issues/1/comments -f body=hi",
+        "gh api https://api.github.com/repos/o/r/issues/1/comments -f body=hi",
+    ),
+]
+
+# (command, verdict): an expansion the guard can't resolve in the endpoint or in a
+# GraphQL call's field. A mutation it can still see decides; otherwise it asks.
+UNRESOLVED = [
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -f query="${Q}"',
+    "gh api graphql -f query=$Q",
+    'gh api graphql -f "query=$Q"',
+    "gh api graphql --field=query=$Q",
+    "gh api graphql -fquery=$Q",
+    "gh api graphql --raw-field query=\"$Q\"",
+    'gh api graphql -f query="$(cat q.graphql)"',
+    "gh api graphql -f query=`cat q.graphql`",
+    "gh api graphql -f query=\"$1\"",
+    "gh api graphql -F id=\"$ID\" -f query='query { viewer { login } }'",
+    "gh api graphql -F \"$K=x\" -f query='query { viewer { login } }'",
+    "Q=$(cat q.graphql); gh api graphql -f query=\"$Q\"",
+    "gh api \"$EP\" -f query='query { viewer { login } }'",
+    "gh api \"${EP}\" --input body.json",
+    "gh api -X POST \"$(echo repos/o/r/issues)\"",
+    "gh api graphql -f query=$'query { viewer { login } }'",
+]
+
+UNRESOLVED_SEEN = [
+    (
+        'gh api graphql -f query="mutation { mergePullRequest(input: {id: \\"$ID\\"}) { x } }"',
+        "block",
+        "gh-api",
+    ),
+    (f"gh api \"$EP\" -f query='{MERGE}'", "block", "gh-api"),
+    (
+        'gh api graphql -f query="mutation { enqueuePullRequest(input: {id: \\"$ID\\"}) { x } }"',
+        "ask",
+        "gh-auto-merge",
+    ),
+    (f"gh api \"$EP\" -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    # A variable the command sets itself is read.
+    (f"q='{MERGE}'; gh api graphql -f query=\"$q\"", "block", "gh-api"),
+    (f"q='{AUTO_MERGE}'; gh api graphql -f query=\"$q\"", "ask", "gh-auto-merge"),
+    (f"export EP=graphql; gh api $EP -f query='{AUTO_MERGE}'", "ask", "gh-auto-merge"),
+    ("N=1; gh api -X PUT repos/o/r/pulls/$N/merge", "block", "gh-api"),
+]  # fmt: skip
+
+# Literal read calls, and values that only look like an expansion or a file: these pass.
+LITERAL_READS = [
+    "gh api graphql -F owner={owner} -F name={repo} -f query='query($owner: String!, "
+    "$name: String!) { repository(owner: $owner, name: $name) { autoMergeAllowed } }'",
+    "gh api graphql -f query='query { viewer { login } }'",
+    'gh api graphql -f query="query { viewer { login } }"',
+    "gh api graphql -f query=\\$Q",
+    "gh api graphql -F email=a@example.com -f query='query { viewer { login } }'",
+    "gh api graphql -F count=5 -F draft=true -f query='query { viewer { login } }'",
+    "q='query { viewer { login } }'; gh api graphql -f query=\"$q\"",
+    "gh api https://api.github.com/repos/o/r/pulls/1",
+    "gh api https://example.com/x",
+    'gh api "repos/$OWNER/r/pulls"',
+    "gh api \"$EP\"",
+    "gh api -X GET graphql -f query=\"$Q\"",
+    "gh api -X POST repos/{owner}/{repo}/statuses/abc -f state=success",
+]
+
+VIEWER = "query { viewer { login } }"
+
+# REST writes whose endpoint has a part the guard can't read still meet the REST rules,
+# that part standing for any one segment.
+REST_AS_WRITTEN = [
+    ("gh api repos/{owner}/{repo}/pulls/$N/merge -X PUT", "block"),
+    ('gh api "repos/$O/$R/pulls/$N/merge" -X PUT', "block"),
+    ('gh api "repos/$R/releases" -f tag_name=v1', "block"),
+    ('gh api "repos/$R/rulesets" -X POST', "block"),
+    ("gh api repos/{owner}/{repo}/git/refs/heads/$B -X DELETE", "block"),
+    ("gh api -X PUT repos/o/r/pulls/`echo 1`/merge", "block"),
+    ('gh api -X PUT "repos/o/r/pulls/${N:-1}/merge"', "block"),
+    ('gh api -X PUT "repos/o/r/pulls/${N#x}/merge"', "block"),
+    ('gh api -X PUT "repos/o/r/pulls/${N%?}/merge"', "block"),
+    ("gh api -X PUT repos/o/r/pulls/1/mer*", "block"),
+    ("gh api -X PUT repos/o/r/pulls/1/{merge,x}", "block"),
+    ('gh api -X POST "repos/o/r/$WHAT"', "block"),
+    ('gh api -X PUT "https://api.github.com/repos/o/r/pulls/$N/merge"', "block"),
+    ('gh api -X POST "repos/o/r/actions/runs/$ID/rerun-failed-jobs"', "block"),
+    ('gh api -X DELETE "orgs/$ORG"', "block"),
+    ('gh api "repos/$O/$R/issues/1/comments" -f body=hi', "ask"),
+    ('gh api -X POST "repos/o/r/labels/$N"', "ask"),
+    ('gh api -X POST "$A/$B/$C"', "block"),
+    ('gh api -X POST "$EP"', "ask"),
+    ('gh api -X POST "https://$HOST/repos/o/r/pulls/1/merge"', "ask"),
+]
+
+# `$(cat <<'EOF' ... EOF)`: a here-document the guard has read is the value.
+CAT_HEREDOC = [
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\n{MERGE}\nEOF\n)\"", "block"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\n{AUTO_MERGE}\nEOF\n)\"", "ask"),
+    (f'gh api graphql -f query="$(cat <<"EOF"\n{AUTO_MERGE}\nEOF\n)"', "ask"),
+    (f"gh api graphql -f query=\"$(cat <<EOF\n{VIEWER}\nEOF\n)\"", "allow"),
+    (f"gh api graphql -f query=\"$(cat - <<'EOF'\n{VIEWER}\nEOF\n)\"", "allow"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\nquery($o: String!) {{ x }}\nEOF\n)\"", "allow"),
+    (f"gh api graphql -f query=\"$(cat <<EOF\n{VIEWER} $X\nEOF\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF' | tr a b\n{VIEWER}\nEOF\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat q.graphql <<'EOF'\n{VIEWER}\nEOF\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\n{VIEWER}\nEOF\necho x\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF' > f\n{VIEWER}\nEOF\n)\"", "ask"),
+]
+
+# Expansions the guard doesn't resolve, even for a variable the command sets.
+NOT_RESOLVED = [
+    *(
+        f"Q='{VIEWER}'; gh api graphql -f query=\"${{Q{op}}}\""
+        for op in ("/a/b", "//a/b", "%x", "%%x", "#x", "##x", ":-x", "-x", ":=x", "^", "^^",
+                   ",", ",,", ":0:5", "@Q")
+    ),
+    f"Q='{VIEWER}'; gh api graphql -f query=\"${{!Q}}\"",
+    f"Q='{VIEWER}'; gh api graphql -f query=\"${{#Q}}\"",
+    "gh api graphql -f query=$'query { viewer { login } }'",
+    "gh api graphql -f query={a,b}",
+    "gh api graphql -f query=q*",
+    "gh api graphql -f query=q?",
+    "gh api graphql -f query=[q]",
+    "gh api graph{ql,x} -f query=x",
+    f"Q='{VIEWER}' gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; Q=$(cat f); gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; Q=\"$Q$X\"; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; Q=other gh api graphql -f query=\"$Q\"",
+    *(
+        f"Q='{VIEWER}'; {setter}; gh api graphql -f query=\"$Q\""
+        for setter in (
+            "read Q", "read -r Q", "while read Q; do :; done < f", "for Q in a b; do :; done",
+            "mapfile Q", "readarray -t Q", "export -n Q", "declare Q=x", "declare -n Q=R",
+            "typeset Q=x", "local Q=x", "readonly Q=x", "printf -v Q x", "getopts ab Q",
+            "unset Q", "let Q=1", "eval Q=x", "source vars.sh", ". vars.sh",
+        )
+    ),
+]  # fmt: skip
+
+# Plain assignments the guard reads, and gh's own placeholders: these pass.
+RESOLVED_READS = [
+    f"Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; gh api graphql -f query=\"${{Q}}\"",
+    f"Q='{VIEWER}'; export Q; gh api graphql -f query=\"$Q\"",
+    f"export Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"A='query {{ viewer'; B=\"$A {{ login }} }}\"; gh api graphql -f query=\"$B\"",
+    f"Q='{VIEWER}'; read R; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; env Q=x gh api graphql -f query=\"$Q\"",
+    "gh api -X POST repos/{owner}/{repo}/labels -f name=x",
+    "gh api -X POST repos/{owner}/{repo}/statuses/{branch} -f state=success",
+]
+
+# A write with no endpoint the guard can see, or fed from input.
+NO_ENDPOINT = [
+    "gh api -X POST",
+    "gh api --method PUT",
+    "gh api -f query=x",
+    "echo repos/o/r/pulls/1/merge | xargs gh api -X PUT",
+    "xargs -I{} gh api {} -X PUT < urls",
+    "xargs -n1 gh api graphql -f query=x < f",
+    "xargs gh api --input body.json < f",
+    "xargs gh api -XPOST < f",
+    "xargs gh api --method=PATCH < f",
+    "parallel gh api -X PUT {} ::: repos/o/r/pulls/1/merge",
+    "parallel gh api {} -F x=1 ::: a b",
+    "sudo parallel gh api -X PUT {} ::: x",
+    "nice xargs gh api -X PUT < f",
+]
+
+FED_BLOCKS = [
+    "parallel gh release create {} ::: v1",
+    "parallel -j2 gh pr merge {} --admin ::: 1 2",
+    "xargs gh pr merge --admin < prs",
+]
+
+FED_READS = [
+    "gh api --help",
+    "xargs -I{} gh api repos/o/r/pulls/{} < prs",
+    "xargs -I % gh api repos/o/r/pulls/% < prs",
+    "xargs --replace gh api repos/o/r/pulls/{}/files < prs",
+    "xargs -i gh api repos/{owner}/{repo}/pulls/{} < prs",
+    "parallel gh api repos/o/r/pulls/{} ::: 1 2",
+    "parallel -I ,, gh api repos/o/r/pulls/,, ::: 1 2",
+    "xargs gh pr view < prs",
+    "xargs -n1 echo -f < f",
+]
+
+HEREDOC_VIEWER = f"$(cat <<'EOF'\n{VIEWER}\nEOF\n)"
+
+# (command, verdict): the here-document's own delimiter says whether it is literal.
+HEREDOC_QUOTING = [
+    (
+        'read -r M < m.txt; gh api graphql -f query="$(cat <<EOF\n# <<"\n'
+        'mutation { ${M}(input:{}) { x } }\nEOF\n)"',
+        "ask",
+    ),
+    ("gh api graphql -f query=\"$(cat <<EOF\n# <<'\nmutation { $M }\nEOF\n)\"", "ask"),
+    ('gh api graphql -f query="$(cat <<EOF\n# <<\\\\\n$M\nEOF\n)"', "ask"),
+    (f"gh api graphql -f query=\"$(cat <<\\EOF\n{MERGE} $M\nEOF\n)\"", "block"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\n{AUTO_MERGE} $M\nEOF\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ x(a: \\\"$M\\\") }}\nEOF\n)\"", "allow"),
+]
+
+# What can make `cat` print something else: the here-document isn't read after these.
+CAT_REDEFINED = [
+    f"cat() {{ echo '{MERGE}'; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"cat () {{ echo x; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"function cat {{ echo x; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"PATH=./bin:$PATH; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"export PATH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"PATH=./bin gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"alias cat=./x; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"alias 'cat=./x'; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"hash -p ./x cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"enable -f ./x.so cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"eval \"$DEF\"; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"eval true; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"source defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f". defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    "cat() { echo 'mutation{mergePullRequest(input:{pullRequestId:\"x\"}){clientMutationId}}'; }; "
+    "gh api graphql -f query=\"$(cat <<'EOF'\ncat()\nEOF\n)\"",
+    *(
+        f"cat() {{ echo x; }}; gh api graphql -f query=\"$(cat <<'EOF'\n{body}\nEOF\n)\""
+        for body in ("cat (", "(", "function", "PATH", ")")
+    ),
+    f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ source {{ hash }} }}\nEOF\n)\"",
+    f"export PA\"\"TH=./bin:/usr/bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"declare -x PA\\TH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"P''ATH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"typeset -x 'PATH'=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"export BASH_\"ENV\"=x; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    "env 'BASH_FUNC_cat%%=() { echo x; }' bash -c 'gh api graphql -f query=\"$(cat <<\\EOF\n"
+    + VIEWER
+    + "\nEOF\n)\"'",
+]
+
+CAT_NOT_REDEFINED = [
+    f"gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"echo cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"echo \"$PATH\"; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"cat x.txt; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+]
+
+# Assignments and builtins after which a variable's earlier value isn't used.
+STALE_VALUES = [
+    *(
+        f"Q='{VIEWER}'; {change}; gh api graphql -f query=\"$Q\""
+        for change in (
+            "Q[0]='mutation { x }'", "Q=('mutation { x }')", "Q+=' mutation { x }'",
+            "Q[1]+=x", "export Q+=x", "export Q[0]=x", "declare -n R=Q", "typeset -n R=Q",
+            "local -n R=Q", "declare -rn R=Q",
+            "command read Q", "builtin read Q", "command -p read Q", "builtin mapfile Q",
+            "builtin declare Q=x", "builtin export Q=$(cat f)", "command unset Q",
+            "trap 'Q=x' DEBUG", "trap - DEBUG", "Q=x; f() { Q=y; }; f", "function f { :; }",
+        )
+    ),
+    f"Q='{VIEWER}'; declare -n R=Q; R=x; gh api graphql -f query=\"$Q\"",
+    f"trap 'Q=x' DEBUG; Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"declare -n R=Q; Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"REPLY='{VIEWER}'; read; gh api graphql -f query=\"$REPLY\"",
+    f"MAPFILE='{VIEWER}'; mapfile < f; gh api graphql -f query=\"$MAPFILE\"",
+    f"Q='{VIEWER}'; Q+=x gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; Q[0]=x gh api graphql -f query=\"$Q\"",
+]  # fmt: skip
+
+# Values the guard still reads.
+STILL_READ = [
+    f"Q='{VIEWER}'; R[0]=x; S+=y; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; command read R; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; builtin export Q; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; declare -r R=x; gh api graphql -f query=\"$Q\"",
+]
+
+# xargs and parallel: where the input can go.
+FED_INPUT = [
+    ("echo '-X PUT' | xargs gh api repos/o/r/pulls/1/merge", "ask"),
+    (f"echo '-f query={MERGE}' | xargs gh api graphql", "ask"),
+    ("xargs gh api repos/o/r/pulls/1 < f", "ask"),
+    ("xargs -n1 gh api < endpoints", "ask"),
+    ("parallel gh api ::: repos/o/r", "ask"),
+    ("xargs -I{} gh api repos/o/r/pulls/1/merge {} < f", "ask"),
+    ("xargs -I{} gh api {} < f", "ask"),
+    ("xargs -I{} gh api -X {} repos/o/r/pulls/1/merge < f", "block"),
+    ("xargs -I{} gh api -X {} repos/o/r/labels < f", "ask"),
+    ("xargs -I{} gh api {}-X repos/o/r < f", "ask"),
+    ("parallel gh api {} ::: repos/o/r repos/o/s", "ask"),
+    ("parallel gh api repos/o/r/pulls/1/merge {.} ::: x", "ask"),
+    ("xargs -I{} gh api graphql -f query={} < f", "ask"),
+    ("xargs -I{} gh api graphql -f 'query=query { x(a: \"{}\") }' < f", "ask"),
+    ("xargs -I{} gh api -X PUT repos/o/r/pulls/{}/merge < prs", "block"),
+    ("xargs -I % gh api -X PUT repos/o/r/pulls/%/merge < prs", "block"),
+    ("parallel gh api -X POST repos/o/r/{} ::: rulesets", "block"),
+    ("parallel -I ,, gh api -X PUT repos/o/r/pulls/,,/merge ::: 1", "block"),
+    ("xargs -I{} gh api -X POST repos/o/r/labels/{} < f", "ask"),
+    ("xargs sh -c 'gh api \"$1\"' _ < f", "ask"),
+    ("parallel gh api repos/o/r/pulls/{=s/^/-X /=} ::: PUT", "ask"),
+    ("parallel gh api {= $_='-XPUT' =} repos/o/r/pulls/1/merge ::: x", "ask"),
+    ("parallel gh api {= $_='-f' =} repos/o/r/labels ::: x", "ask"),
+    ("parallel --rpl '{x} s/^/-X/' gh api repos/o/r/labels/{x} ::: PUT", "ask"),
+    ("parallel --plus gh api repos/o/r/pulls/{+.} ::: 1", "ask"),
+    ("parallel gh api repos/o/r/pulls/{} {=uq=} ::: 1", "ask"),
+    ("parallel --rpl '{u} uq()' gh api repos/o/r/labels/{} ::: x", "ask"),
+    ("parallel --rpl='{u} uq()' gh api repos/o/r/labels/{} ::: x", "ask"),
+    ("parallel --plus gh api repos/o/r/pulls/{} ::: 1", "ask"),
+    ("parallel --rpl '{x} s/a/b/' echo {x} ::: a", "allow"),
+    ("xargs -n1 gh pr view < prs", "allow"),
+    ("xargs -I{} gh api repos/o/r/pulls/{} < prs", "allow"),
+    ("parallel gh api repos/o/r/pulls/{} ::: {} 2", "allow"),
+]
+
+# Brace expansion with quoted parts gives the word bash builds from it.
+QUOTED_BRACES = [
+    (f"gh api {{\"graphql\",}} -f query='{MERGE}'", "block"),
+    (f"gh api {{'graphql',}} -f query='{MERGE}'", "block"),
+    (f"gh api {{'graphql',}} -f query='{AUTO_MERGE}'", "ask"),
+    (f"gh api {{\"graph\"ql,}} -f query='{VIEWER}'", "ask"),
+    (f"gh api graphql -f query={{\"{VIEWER}\",}}", "ask"),
+    (f"gh api graphql -f query='{{\"a\",}}{VIEWER}'", "allow"),
 ]
 
 GITHUB_READS = [
@@ -515,6 +920,245 @@ class OutwardFacingActions(GuardTest):
         self.assertEqual(
             self.decision("gh issue comment 1 --body hi && gh pr merge 1 --admin"), "block"
         )
+
+
+class AutoMergeAndTheMergeQueue(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def test_the_mutations_ask_in_every_form_the_guard_reads(self):
+        for mutation in AUTO_MERGE_MUTATIONS:
+            for form in READABLE_QUERIES:
+                command = form.replace("{m}", mutation)
+                with self.subTest(command=command):
+                    self.assertEqual(self.decision(command), "ask")
+                    verdict = self.verdict(command)
+                    self.assertEqual(verdict.rule, "gh-auto-merge")
+                    self.assertIn(mutation, verdict.reason)
+                    self.assertIn("the maintainer decides", verdict.reason)
+
+    def test_a_query_from_a_file_or_stdin_asks(self):
+        for mutation in AUTO_MERGE_MUTATIONS:
+            for form in UNREADABLE_QUERIES:
+                command = form.replace("{m}", mutation)
+                with self.subTest(command=command):
+                    self.assertEqual(self.decision(command), "ask")
+                    self.assertIn("can't read", self.verdict(command).reason)
+
+    def test_a_block_beats_the_ask(self):
+        command = (
+            "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { x } "
+            "mergePullRequest(input: {}) { x } }'"
+        )
+        self.assertEqual(self.decision(command), "block")
+
+    def test_reading_auto_merge_and_the_queue_passes(self):
+        self.assert_decisions("allow", AUTO_MERGE_READS)
+
+    def test_gh_pr_merge_auto_asks_as_any_merge_does(self):
+        for command in ("gh pr merge 1 --auto", "gh pr merge 1 --disable-auto"):
+            with self.subTest(command=command):
+                verdict = self.verdict(command)
+                self.assertEqual((verdict.level, verdict.rule), (guard.ASK, "gh-pr-merge"))
+                self.assertEqual(verdict.reason, "merging is the maintainer's decision")
+
+
+class Endpoints(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def assert_verdicts(self, cases):
+        for command, expected, rule in cases:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+                self.assertEqual(self.verdict(command).rule, rule)
+
+    def test_an_endpoint_is_read_as_gh_reads_it(self):
+        self.assert_verdicts(ENDPOINTS)
+
+    def test_a_full_url_meets_the_rules_of_its_path(self):
+        for short, other in SAME_ENDPOINT:
+            with self.subTest(command=other):
+                self.assertNotEqual(self.verdict(short).level, guard.ALLOW)
+                self.assertEqual(self.verdict(other), self.verdict(short))
+
+    def test_the_paths(self):
+        cases = {
+            "graphql": "graphql",
+            "/graphql": "graphql",
+            "graphql#x": "graphql",
+            "graphql?a=1": "graphql",
+            "repos/o/r?a=1#b": "repos/o/r",
+            "https://api.github.com/repos/o/r": "repos/o/r",
+            "HTTPS://API.GITHUB.COM/graphql": "graphql",
+            "https://api.github.com": "",
+            "https://ghe.example.com/api/v3/repos/o/r": "repos/o/r",
+            "https://ghe.example.com/api/graphql": "graphql",
+            "https://ghe.example.com/api/graphql#x": "graphql",
+            "https://example.com/repos/o/r": None,
+            "https://uploads.github.com/repos/o/r": None,
+            "https://api.github.com.example.com/repos/o/r": None,
+            "git://api.github.com/repos/o/r": None,
+            "api.github.com/repos/o/r": "api.github.com/repos/o/r",
+        }
+        for endpoint, path in cases.items():
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(guard.api_path(endpoint), path)
+
+
+class UnresolvedValues(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def test_a_value_the_guard_cannot_read_asks(self):
+        for command in UNRESOLVED:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), "ask")
+                self.assertIn("can't read before it runs", self.verdict(command).reason)
+
+    def test_what_the_guard_can_still_see_decides(self):
+        for command, expected, rule in UNRESOLVED_SEEN:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+                self.assertEqual(self.verdict(command).rule, rule)
+
+    def test_literal_reads_pass(self):
+        self.assert_decisions("allow", LITERAL_READS)
+
+    def test_the_words_that_expand(self):
+        cases = {
+            "x": False,
+            "'$x'": False,
+            "$'$x'": True,
+            "${x:-y}": True,
+            "*.json": True,
+            "a{b,c}": True,
+            "{owner}": False,
+            "{}": False,
+            "\\$x": False,
+            "a$": False,
+            "$x": True,
+            '"$x"': True,
+            '"${x}"': True,
+            "$1": True,
+            '"$@"': True,
+            "'a'$x": True,
+            "$(x)": True,
+            '"$(x)"': True,
+            "`x`": True,
+            '"`x`"': True,
+        }
+        for word, expands in cases.items():
+            with self.subTest(word=word):
+                (cmd,) = guard.parse(f"echo {word}")
+                self.assertIs(isinstance(cmd.words[1], guard.Unresolved), expands)
+
+
+class ReadingWhatTheShellPasses(GuardTest):
+    def test_rest_writes_meet_the_rest_rules_as_written(self):
+        for command, expected in REST_AS_WRITTEN:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+        reason = guard.decide('gh api "repos/$O/$R/issues/1" -f body=x', str(self.config_path))
+        self.assertIn("posts in public", reason.reason)
+
+    def test_each_rest_block_still_blocks_with_a_segment_unread(self):
+        """Every `gh api` write that OUTWARD blocks, with each segment of its path in
+        turn replaced by a variable, a substitution or a glob."""
+        cases = [b for b, _ in OUTWARD if b.startswith("gh api") and "graphql" not in b]
+        self.assertGreater(len(cases), 10)
+        for command in cases:
+            words = command.split(" ")
+            k = next(j for j, w in enumerate(words) if w.startswith("repos/"))
+            parts = words[k].split("/")
+            for j in range(len(parts)):
+                for stand_in in ("$X", "${X}", "`x`", "x*", "${X:-x}"):
+                    variant = list(parts)
+                    variant[j] = stand_in
+                    changed = " ".join([*words[:k], "/".join(variant), *words[k + 1 :]])
+                    with self.subTest(command=changed):
+                        self.assertEqual(self.decision(changed), "block")
+
+    def test_the_shapes_are_the_regexes(self):
+        for shapes, regex in (
+            (guard.GH_API_PROTECTED_SHAPES, guard.GH_API_PROTECTED),
+            (guard.GH_API_POSTS_SHAPES, guard.GH_API_POSTS),
+        ):
+            for shape, _ in shapes:
+                path = shape.replace("*", "x")
+                with self.subTest(path=path):
+                    self.assertTrue(regex.match(path + ("x" if path.endswith("/") else "")))
+                    segments = (path + ("x" if path.endswith("/") else "")).split("/")
+                    self.assertTrue(any(guard.fits(segments, sh) for sh in shapes))
+
+    def test_a_cat_of_a_heredoc_is_read(self):
+        for command, expected in CAT_HEREDOC:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+
+    def test_expansions_it_does_not_resolve_ask(self):
+        self.assert_decisions("ask", NOT_RESOLVED)
+
+    def test_plain_assignments_and_placeholders_are_read(self):
+        self.assert_decisions("allow", RESOLVED_READS)
+
+    def test_a_typed_field_reads_a_file_only_from_a_leading_at(self):
+        query = f"-f query='{VIEWER}'"
+        self.assertEqual(self.decision(f"gh api graphql -F to=a@b.c {query}"), "allow")
+        self.assertEqual(self.decision(f'gh api graphql -F owner="$OWNER" {query}'), "ask")
+
+    def test_a_write_with_no_endpoint_or_fed_from_input_asks(self):
+        self.assert_decisions("ask", NO_ENDPOINT)
+
+    def test_blocked_commands_fed_from_input_block(self):
+        self.assert_decisions("block", FED_BLOCKS)
+
+    def test_reads_fed_from_input_pass(self):
+        self.assert_decisions("allow", FED_READS)
+
+
+class WhatTheShellMayChange(GuardTest):
+    def assert_verdicts(self, cases):
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+
+    def test_a_heredoc_is_literal_by_its_own_delimiter(self):
+        self.assert_verdicts(HEREDOC_QUOTING)
+
+    def test_a_heredoc_is_not_read_when_cat_may_be_something_else(self):
+        self.assert_decisions("ask", CAT_REDEFINED)
+        self.assert_decisions("allow", CAT_NOT_REDEFINED)
+
+    def test_values_the_command_may_have_changed_are_not_used(self):
+        self.assert_decisions("ask", STALE_VALUES)
+        self.assert_decisions("allow", STILL_READ)
+
+    def test_input_fed_to_gh_api(self):
+        self.assert_verdicts(FED_INPUT)
+
+    def test_brace_expansion_with_quoted_parts(self):
+        self.assert_verdicts(QUOTED_BRACES)
+        (cmd,) = guard.parse('echo {"a",b}')
+        self.assertIsInstance(cmd.words[1], guard.Unresolved)
+
+
+class AskReasons(GuardTest):
+    def test_the_reasons_are_the_maintainers_decision_or_a_public_post(self):
+        reasons = {
+            "gh pr merge 1 --squash": "merging is the maintainer's decision",
+            "gh pr review 1 --approve": "it posts in public",
+            "gh issue comment 1 --body hi": "it posts in public",
+            "gh api repos/{owner}/{repo}/issues/1/comments -f body=hi": (
+                "POST repos/{owner}/{repo}/issues/1/comments posts in public"
+            ),
+            "gh api graphql -f query='mutation { addComment(input: {}) { x } }'": (
+                "addComment posts in public"
+            ),
+        }
+        for command, reason in reasons.items():
+            with self.subTest(command=command):
+                self.assertEqual(guard.decide(command, str(self.config_path)).reason, reason)
 
 
 class MaintainerOnly(GuardTest):
