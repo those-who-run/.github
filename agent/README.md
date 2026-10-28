@@ -77,8 +77,9 @@ policy.
   any after an assignment to an array, an element or with `+=`, after `declare -n` or
   `trap`, or on a command line that defines a function. `$(cat <<'EOF' ... EOF)` is
   read as the here-document it prints, literal when its own delimiter is quoted, and
-  only when nothing in the command defines `cat` as a function or alias, sets PATH,
-  or runs `hash`, `enable`, `eval`, `source` or `.`. What the guard can still see
+  only when nothing in the whole command, here-document included and quotes aside
+  (`PA""TH`), defines `cat` as a function or alias, names PATH, or runs `hash`,
+  `enable`, `eval`, `source` or `.`. What the guard can still see
   decides first: a GraphQL
   mutation, and the REST rules, which it checks on the endpoint as written, a part
   it can't read standing for any one path segment, so
@@ -89,7 +90,7 @@ policy.
   or `parallel` running `gh api` asks, since its input may be flags, unless a
   replacement string (`xargs -I{}`, `-i`, `--replace`, or parallel's `{}`) fixes where
   the input goes and that is nowhere a flag could be; there the input is a value the
-  guard can't read. `env` takes any `NAME=value` argument as an assignment, as env
+  guard can't read. parallel with `{= ... =}`, `--rpl` or `--plus` running gh asks. `env` takes any `NAME=value` argument as an assignment, as env
   does.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is

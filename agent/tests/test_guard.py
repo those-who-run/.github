@@ -614,6 +614,18 @@ CAT_REDEFINED = [
     f"eval true; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
     f"source defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
     f". defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    "cat() { echo 'mutation{mergePullRequest(input:{pullRequestId:\"x\"}){clientMutationId}}'; }; "
+    "gh api graphql -f query=\"$(cat <<'EOF'\ncat()\nEOF\n)\"",
+    *(
+        f"cat() {{ echo x; }}; gh api graphql -f query=\"$(cat <<'EOF'\n{body}\nEOF\n)\""
+        for body in ("cat (", "(", "function", "PATH", ")")
+    ),
+    f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ source {{ hash }} }}\nEOF\n)\"",
+    f"export PA\"\"TH=./bin:/usr/bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"declare -x PA\\TH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"P''ATH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"typeset -x 'PATH'=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"export BASH_\"ENV\"=x; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
     "env 'BASH_FUNC_cat%%=() { echo x; }' bash -c 'gh api graphql -f query=\"$(cat <<\\EOF\n"
     + VIEWER
     + "\nEOF\n)\"'",
@@ -624,7 +636,6 @@ CAT_NOT_REDEFINED = [
     f"echo cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
     f"echo \"$PATH\"; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
     f"cat x.txt; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
-    f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ source {{ hash }} }}\nEOF\n)\"",
 ]
 
 # Assignments and builtins after which a variable's earlier value isn't used.
@@ -679,6 +690,16 @@ FED_INPUT = [
     ("parallel -I ,, gh api -X PUT repos/o/r/pulls/,,/merge ::: 1", "block"),
     ("xargs -I{} gh api -X POST repos/o/r/labels/{} < f", "ask"),
     ("xargs sh -c 'gh api \"$1\"' _ < f", "ask"),
+    ("parallel gh api repos/o/r/pulls/{=s/^/-X /=} ::: PUT", "ask"),
+    ("parallel gh api {= $_='-XPUT' =} repos/o/r/pulls/1/merge ::: x", "ask"),
+    ("parallel gh api {= $_='-f' =} repos/o/r/labels ::: x", "ask"),
+    ("parallel --rpl '{x} s/^/-X/' gh api repos/o/r/labels/{x} ::: PUT", "ask"),
+    ("parallel --plus gh api repos/o/r/pulls/{+.} ::: 1", "ask"),
+    ("parallel gh api repos/o/r/pulls/{} {=uq=} ::: 1", "ask"),
+    ("parallel --rpl '{u} uq()' gh api repos/o/r/labels/{} ::: x", "ask"),
+    ("parallel --rpl='{u} uq()' gh api repos/o/r/labels/{} ::: x", "ask"),
+    ("parallel --plus gh api repos/o/r/pulls/{} ::: 1", "ask"),
+    ("parallel --rpl '{x} s/a/b/' echo {x} ::: a", "allow"),
     ("xargs -n1 gh pr view < prs", "allow"),
     ("xargs -I{} gh api repos/o/r/pulls/{} < prs", "allow"),
     ("parallel gh api repos/o/r/pulls/{} ::: {} 2", "allow"),

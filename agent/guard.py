@@ -1362,7 +1362,8 @@ def cat_heredoc(inner: str) -> str | None:
     body = cmd.stdin_scripts[0]
     if not cmd.heredocs_quoted[0] and any(c in body for c in "$`\\"):
         return None  # an unquoted delimiter: the shell expands the body
-    if CAT_REDEFINED.search(WHOLE_COMMAND.replace(body, "")):
+    unquoted = re.sub(r"['\"\\]", "", WHOLE_COMMAND)  # `PA""TH=` sets PATH too
+    if CAT_REDEFINED.search(unquoted):
         return None  # `cat` may not be the cat that prints it
     return body.rstrip("\n")
 
@@ -1703,6 +1704,9 @@ def fed_gh_api(name: str, args: list[str], env: dict[str, str]) -> Verdict:
     parallel's `{}`) fixes where the input goes, and the input goes nowhere a flag
     could be. Where it goes, it is a value the guard can't read."""
     words = [os.path.basename(a) for a in args]
+    if name == "parallel" and any("{=" in a or a.startswith(("--rpl", "--plus")) for a in args):
+        if any(re.search(r"\bgh\b", a) for a in args):
+            return ask("gh-api", "parallel's own replacement strings can put its input anywhere")
     if "gh" not in words:
         if any(re.search(r"\bgh\b.*\bapi\b", a) for a in args):
             return ask("gh-api", f"{name} runs gh api with arguments from its input")
