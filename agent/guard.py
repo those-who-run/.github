@@ -668,7 +668,9 @@ def gh_api_rule(args: list[str]) -> Verdict:
         if m:
             return ask("gh-api", f"{m.group(0)} posts in public")
         if has_input:
-            return ask("gh-api", "a GraphQL request from a file or stdin, which the guard can't read")
+            return ask(
+                "gh-api", "a GraphQL request from a file or stdin, which the guard can't read"
+            )
         return ALLOWED
     if GH_API_PROTECTED.match(path):
         return block(
