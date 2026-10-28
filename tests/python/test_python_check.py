@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "python" / "fixture"
 PYTHON_CHECK = ROOT / "scripts" / "python_check.py"
 
+sys.path.insert(0, str(PYTHON_CHECK.parent))
+import python_check  # noqa: E402
+
 # A broken case must not leave error annotations or a summary on the CI run that
 # tests it: those are for a caller's real failures. Nor may uv see a commit hook's
 # GIT_DIR, or an environment other than the copy's own.
@@ -50,7 +53,7 @@ class PythonCheck(unittest.TestCase):
 
     def check(self, *args: str) -> tuple[int, str]:
         proc = subprocess.run(
-            [sys.executable, str(PYTHON_CHECK), *args],
+            [sys.executable, "-I", str(PYTHON_CHECK), *args],
             cwd=self.project,
             env=ENV,
             capture_output=True,
@@ -70,7 +73,7 @@ class PythonCheck(unittest.TestCase):
     def test_the_fixture_passes_every_check(self):
         code, out = self.check("all")
         self.assertEqual(code, 0, out)
-        self.assertIn("Coverage: 100.0% (the floor is 90%).", out)
+        self.assertIn("Coverage: 100% (the floor is 90%).", out)
 
     def test_a_stale_lock(self):
         path = self.project / "pyproject.toml"
@@ -140,6 +143,54 @@ class PythonCheck(unittest.TestCase):
         self.assertIn("is below the floor of 90%", out)
         code, out = self.check("test", "--floor", "10")
         self.assertEqual(code, 0, out)
+
+    def coverage_config(self, text: str) -> None:
+        with (self.project / "pyproject.toml").open("a") as f:
+            f.write(text)
+
+    def test_the_projects_own_fail_under_does_not_hide_the_floor(self):
+        # coverage's own check fails `coverage json` below fail_under; the floor
+        # still decides, both ways.
+        self.coverage_config("\n[tool.coverage.report]\nfail_under = 100\n")
+        self.write("src/fixture/pits.py", "PITS = 2\n")
+        self.synced()
+        self.assertFails("test", "is below the floor of 90%")
+        code, out = self.check("test", "--floor", "10")
+        self.assertEqual(code, 0, out)
+
+    def test_coverage_that_cannot_report(self):
+        # A report limited to files that don't exist: "No data to report."
+        self.coverage_config('\n[tool.coverage.report]\ninclude = ["nowhere/*"]\n')
+        self.synced()
+        self.assertFails("test", "coverage could not report")
+
+    def test_the_floor_compares_what_coverage_shows(self):
+        # Two statements of three covered: 66.67%, which coverage shows as 67 at its
+        # default precision, so a floor of 67 is met, as `coverage report` has it.
+        self.write("src/fixture/pits.py", "PITS = 2\n")
+        self.synced()
+        code, out = self.check("test", "--floor", "67")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Coverage: 67% (the floor is 67%).", out)
+        self.assertFails("test", "coverage 67% is below the floor of 68%", "--floor", "68")
+        # With two places it shows 66.67.
+        self.coverage_config("\n[tool.coverage.report]\nprecision = 2\n")
+        code, out = self.check("test", "--floor", "66.67")
+        self.assertEqual(code, 0, out)
+        self.assertFails("test", "coverage 66.67% is below the floor of 66.68%", "--floor", "66.68")
+
+    def test_a_floor_of_100_needs_100(self):
+        self.assertTrue(python_check.below_floor({"percent_covered": 99.6, "percent_covered_display": "100"}, 100))
+        self.assertFalse(python_check.below_floor({"percent_covered": 100.0, "percent_covered_display": "100"}, 100))
+        self.assertFalse(python_check.below_floor({"percent_covered": 89.6, "percent_covered_display": "90"}, 90))
+
+    def test_nothing_measured_fails(self):
+        # The source names an empty package: no statements to measure.
+        self.write("src/empty/__init__.py", "")
+        path = self.project / "pyproject.toml"
+        path.write_text(path.read_text().replace('source = ["src/fixture"]', 'source = ["src/empty"]'))
+        self.synced()
+        self.assertFails("test", "coverage measured no statements")
 
     def test_it_runs_only_in_a_project(self):
         (self.project / "uv.lock").unlink()

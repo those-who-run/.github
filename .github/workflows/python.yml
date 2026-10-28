@@ -19,7 +19,8 @@ name: Python
 #
 # The checks themselves are scripts/python_check.py in this repository, checked out
 # at the commit the caller pinned, never from the PR being checked, so a PR can't
-# edit the checks that judge it.
+# edit the checks that judge it. It runs with `python3 -I`, so nothing beside it or in
+# the environment can stand in for the standard library it imports.
 #
 # Nothing here reads the pull request, so on `merge_group` (a caller that triggers on
 # it, for a merge queue) every check runs on the merge group's commit
@@ -135,7 +136,7 @@ jobs:
           CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" lock
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" lock
       - name: Install from uv.lock
         id: sync
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
@@ -143,28 +144,28 @@ jobs:
           CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" sync
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" sync
       - name: ruff format
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         env:
           CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" format
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" format
       - name: ruff check
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         env:
           CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" lint
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" lint
       - name: mypy
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         env:
           CHECKS_SHA256: ${{ steps.checks.outputs.sha256 }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" types
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" types
       - name: Tests (no skips, coverage floor)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         env:
@@ -172,4 +173,4 @@ jobs:
           FLOOR: ${{ inputs.coverage-floor }}
         run: |
           sha256sum --quiet --strict --check <<<"$CHECKS_SHA256"
-          python3 "$RUNNER_TEMP/python-checks/python_check.py" test --floor "$FLOOR"
+          python3 -I "$RUNNER_TEMP/python-checks/python_check.py" test --floor "$FLOOR"

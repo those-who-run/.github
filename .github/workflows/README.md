@@ -337,7 +337,12 @@ The language checks every Python repository runs on a PR, in one job: `uv.lock` 
 to date with `pyproject.toml`, the project installed from it, `ruff format --check`,
 `ruff check`, mypy, and pytest under coverage, failing on a failing or skipped test
 (an expected failure, `xfail`, counts as a skip), on no tests at all, or on total
-coverage below the floor. Each check runs whatever the one before found, so one run
+coverage below the floor. Coverage that measures no statements fails too, as a Go
+package without tests counts as uncovered, and so does coverage that can't report.
+The total is compared as coverage shows it, rounded to the project's
+`[tool.coverage.report] precision` (0 places unless set), so `coverage report` on a
+laptop and the job agree; a floor of 100 needs 100% itself. The project's own
+`fail_under` doesn't apply here: the floor is the `coverage-floor` input. Each check runs whatever the one before found, so one run
 shows every failure; only a failed install stops the checks after it. The
 language-neutral checks come from checks.yml, a separate required check.
 
@@ -391,7 +396,8 @@ uv run --no-sync coverage run -m pytest   # then coverage report --fail-under=<f
 The checks are [`scripts/python_check.py`](../../scripts/python_check.py). As in
 go.yml, the job checks it out of this repository at the commit the caller pinned,
 confirms it matches that commit, moves it out of the caller's checkout and checks its
-SHA-256 digest before each step that runs it. The tools are the project's own, from
+SHA-256 digest before each step that runs it. It runs with `python3 -I`, so no module
+beside it or on `PYTHONPATH` can stand in for the standard library it imports. The tools are the project's own, from
 its `uv.lock`, so a PR that changes them shows in that file's diff.
 
 python.yml has no test guard yet: a deleted test, a removed test function or a lowered

@@ -12,8 +12,10 @@ uv on the PATH. The checks:
     lint    `ruff check`, the project's config
     types   mypy, the project's config (the files it checks and its strictness)
     test    pytest under coverage; fails on a failing or skipped test (an expected
-            failure, xfail, counts as a skip), on no tests at all, or on total
-            coverage below --floor
+            failure, xfail, counts as a skip), on no tests at all, on coverage
+            measuring no statements or unable to report, or on total coverage
+            below --floor, rounded to the project's `precision` as coverage
+            rounds it
     all     every check above, reporting each, failing if any fails
 
 The tools are the project's own: ruff, mypy, pytest and coverage come from its
@@ -141,14 +143,20 @@ def skipped_tests(junit: str) -> list[str]:
     return found
 
 
-def total_coverage(report: str) -> float | None:
-    """The total percentage from coverage's JSON report; None when nothing was
-    measured."""
+def read_totals(report: str) -> dict:
+    """The `totals` of coverage's JSON report."""
     with open(report, encoding="utf-8") as f:
-        totals = json.load(f)["totals"]
-    if not totals.get("num_statements"):
-        return None
-    return float(totals["percent_covered"])
+        return json.load(f)["totals"]
+
+
+def below_floor(totals: dict, floor: float) -> bool:
+    """Whether the total is below the floor, by coverage's own rule for fail_under:
+    the total as it shows it, rounded to the project's `precision` (0 places unless
+    set), so `coverage report` and this agree; and a floor of 100 is met only by
+    100% itself, never by a total that rounds up to it."""
+    if floor >= 100:
+        return float(totals["percent_covered"]) < 100
+    return float(totals["percent_covered_display"]) < floor
 
 
 def check_test(args: argparse.Namespace) -> bool:
@@ -159,9 +167,14 @@ def check_test(args: argparse.Namespace) -> bool:
         os.environ["COVERAGE_FILE"] = data
         code = tool("coverage", "run", "-m", "pytest", "-rs", f"--junitxml={junit}")
         skipped = skipped_tests(junit) if os.path.isfile(junit) else []
-        coverage = None
-        if code == 0 and tool("coverage", "json", "-q", "-o", report) == 0:
-            coverage = total_coverage(report)
+        totals = None
+        reported = True
+        if code == 0:
+            # --fail-under=0: the floor is --floor, checked below, and the project's
+            # own fail_under must not turn coverage's exit into "nothing to say".
+            reported = tool("coverage", "json", "-q", "--fail-under=0", "-o", report) == 0
+            if reported:
+                totals = read_totals(report)
 
     ok = code == 0
     if code == NO_TESTS:
@@ -171,18 +184,25 @@ def check_test(args: argparse.Namespace) -> bool:
     for name in skipped:
         error(f"test skipped: {name}. A skipped test fails, as in v1: fix it or remove it")
         ok = False
-    if ok and coverage is None:
-        line = "Coverage: nothing was measured, so the floor doesn't apply."
-        print(line)
-        summary(line)
-    if coverage is not None:
-        line = f"Coverage: {coverage:.1f}% (the floor is {args.floor:g}%)."
-        print(line)
-        summary(line)
-        # coverage rounds the same way for its own fail_under: compare what it shows.
-        if round(coverage, 1) < args.floor:
-            error(f"coverage {coverage:.1f}% is below the floor of {args.floor:g}%")
-            ok = False
+    if not reported:
+        error("coverage could not report on the tests' run: see its message above")
+        return False
+    if totals is None:
+        return ok
+    if not totals.get("num_statements"):
+        # As in Go, where a package without tests counts as uncovered: a floor that
+        # measures nothing would pass anything.
+        error(
+            "coverage measured no statements: its [tool.coverage.run] source should "
+            "name the project's code, and the tests import it"
+        )
+        return False
+    line = f"Coverage: {totals['percent_covered_display']}% (the floor is {args.floor:g}%)."
+    print(line)
+    summary(line)
+    if below_floor(totals, args.floor):
+        error(f"coverage {totals['percent_covered_display']}% is below the floor of {args.floor:g}%")
+        ok = False
     return ok
 
 
