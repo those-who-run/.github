@@ -73,14 +73,24 @@ policy.
   (`q='...'; gh api graphql -f query="$q"`); a `${...}` with an operator, `$(...)`,
   backquotes, `$'...'`, a glob or a brace expansion is never resolved, nor is a
   variable named in a prefix assignment of the same command, or one set by `read`,
-  `for`, `declare`, `printf -v` and the like. `$(cat <<'EOF' ... EOF)` is read as the
-  here-document it prints. What the guard can still see decides first: a GraphQL
+  `for`, `declare`, `printf -v` and the like (also behind `command` or `builtin`), nor
+  any after an assignment to an array, an element or with `+=`, after `declare -n` or
+  `trap`, or on a command line that defines a function. `$(cat <<'EOF' ... EOF)` is
+  read as the here-document it prints, literal when its own delimiter is quoted, and
+  only when nothing in the command defines `cat` as a function or alias, sets PATH,
+  or runs `hash`, `enable`, `eval`, `source` or `.`. What the guard can still see
+  decides first: a GraphQL
   mutation, and the REST rules, which it checks on the endpoint as written, a part
   it can't read standing for any one path segment, so
   `gh api -X PUT "repos/$O/$R/pulls/$N/merge"` blocks as the literal path does. Text
   in single quotes (a GraphQL `$owner`) and gh's own placeholders (`{owner}`,
-  `{repo}`) are literal. A `gh api` write with no endpoint the guard can see asks,
-  as does `xargs` or `parallel` running a `gh api` write.
+  `{repo}`) are literal. Brace expansion counts with quoted parts too
+  (`{"graphql",}`). A `gh api` write with no endpoint the guard can see asks. `xargs`
+  or `parallel` running `gh api` asks, since its input may be flags, unless a
+  replacement string (`xargs -I{}`, `-i`, `--replace`, or parallel's `{}`) fixes where
+  the input goes and that is nowhere a flag could be; there the input is a value the
+  guard can't read. `env` takes any `NAME=value` argument as an assignment, as env
+  does.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is
   blocked, with the reason, until the file is fixed; the Read and Edit tools still

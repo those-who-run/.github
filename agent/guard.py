@@ -59,6 +59,9 @@ MAX_DEPTH = 3
 SENSITIVE = re.compile(r"(?<![\w.-])(git|gh|kubectl|oc|helm|docker|podman|pre-commit)(?![\w-])")
 
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Any assignment: also to an array element (`Q[0]=`) and appending (`Q+=`).
+ANY_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
+ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 # Shell keywords that may start a simple command and run what follows.
@@ -648,6 +651,9 @@ def gh_rule(args: list[str], env: dict[str, str]) -> Verdict:
 RESOLVED = "value "
 
 
+FUNCTION_DEFINITION = re.compile(r"[\w.:-]\s*\(\s*\)|\bfunction\s")
+
+
 def readable(word: str, env: dict[str, str]) -> str | None:
     """The word as the shell will pass it, or None when an expansion in it can't be
     resolved from what the command itself sets."""
@@ -655,6 +661,8 @@ def readable(word: str, env: dict[str, str]) -> str | None:
         return word
     if word.opaque:
         return None
+    if FUNCTION_DEFINITION.search(WHOLE_COMMAND):
+        return None  # a function called later may set any variable
     pieces, pos = [], 0
     for m in BARE.finditer(word):
         value = env.get(RESOLVED + (m.group(1) or m.group(2)))
@@ -665,14 +673,49 @@ def readable(word: str, env: dict[str, str]) -> str | None:
     return "".join(pieces) + word[pos:]
 
 
+# Set once the command line has done something after which the guard can't tell
+# which variable an assignment changes (`declare -n`, `trap`).
+NO_TRACKING = "no tracking"
+
+
 def track(env: dict[str, str], word: str) -> None:
     """Record what a plain NAME=value assignment leaves the variable holding."""
     name = word.split("=", 1)[0]
-    value = readable(word, env)
+    value = None if NO_TRACKING in env else readable(word, env)
     if value is None:
         env.pop(RESOLVED + name, None)
     else:
         env[RESOLVED + name] = value[len(name) + 1 :]
+
+
+def forget_all(env: dict[str, str], for_good: bool = False) -> None:
+    """Forget every variable's value: something ran that can set any of them."""
+    for k in [k for k in env if k.startswith(RESOLVED)]:
+        del env[k]
+    if for_good:
+        env[NO_TRACKING] = ""
+
+
+def apply_setters(name: str, args: list[str], shell_env: dict[str, str]) -> None:
+    """What a builtin does to the variables the guard has read."""
+    if name in ("export", "declare", "typeset", "local", "readonly"):
+        options = [a for a in args if a.startswith("-")]
+        if name != "export" and any("n" in a[1:] for a in options):
+            forget_all(shell_env, for_good=True)  # a nameref: any assignment may be another
+        elif name == "export" and not options:
+            for a in args:
+                if ASSIGNMENT.match(a):
+                    track(shell_env, a)
+                elif ANY_ASSIGNMENT.match(a):
+                    untrack(shell_env, [a])
+        else:
+            untrack(shell_env, args)
+    elif name in UNTRACKED_SETTERS:
+        untrack(shell_env, args, ("REPLY", "MAPFILE", "OPTARG", "OPTIND"))
+    elif name in ("eval", "source", "."):
+        forget_all(shell_env)
+    elif name == "trap":
+        forget_all(shell_env, for_good=True)  # it runs before each command that follows
 
 
 def untrack(env: dict[str, str], args: list[str], also: tuple[str, ...] = ()) -> None:
@@ -1131,6 +1174,7 @@ class Token:
     heredoc: str | None = None  # the body of a << here-document
     expands: bool = False  # it has an expansion outside single quotes
     opaque: bool = False  # one that isn't a plain $NAME or ${NAME}
+    heredoc_quoted: bool = False  # its delimiter is quoted: the body is literal
 
 
 class Unresolved(str):
@@ -1152,6 +1196,7 @@ class Command:
     words: list[str] = field(default_factory=list)
     subs: list[str] = field(default_factory=list)
     stdin_scripts: list[str] = field(default_factory=list)  # here-documents and <<< strings
+    heredocs_quoted: list[bool] = field(default_factory=list)  # each here-document's
     redirects: list[tuple[str, str]] = field(default_factory=list)  # (operator, target)
 
 
@@ -1265,7 +1310,8 @@ def substitutions(text: str) -> list[str]:
 
 # A plain parameter expansion, the only kind the guard resolves: $NAME or ${NAME}.
 BARE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
-BRACE_EXPANSION = re.compile(r"\{[^{}\s'\"]*(,|\.\.)[^{}\s'\"]*\}")
+_BRACE_PART = r"(?:[^{}\s'\"\\]|\\.|'[^']*'|\"[^\"]*\")*"
+BRACE_EXPANSION = re.compile(r"\{" + _BRACE_PART + r"(,|\.\.)" + _BRACE_PART + r"\}")
 
 
 def dollar(text: str, i: int, quoted: bool) -> str | None:
@@ -1286,6 +1332,19 @@ def dollar(text: str, i: int, quoted: bool) -> str | None:
     return None
 
 
+# What can make `cat` run something else: a function or an alias of that name, PATH,
+# `hash -p`, a loadable builtin, an exported function, or code the guard doesn't read
+# (`eval`, `source`, `.`).
+CAT_REDEFINED = re.compile(
+    r"""\bcat\s*\(\s*\) | \bfunction\s+cat\b | \balias\b[^\n;&|]*\bcat['"]?=
+      | (?<![${])\bPATH\b | \bhash\b | \benable\b | BASH_FUNC_ | \bBASH_ENV\b
+      | \beval\b | \bsource\b | (^|[\s;&|(])\.\s""",
+    re.X,
+)
+# The whole command the guard is deciding on.
+WHOLE_COMMAND = ""
+
+
 def cat_heredoc(inner: str) -> str | None:
     """The text of `$(cat <<'EOF' ... EOF)`: a substitution that only prints a
     here-document the guard has read. None for any other substitution."""
@@ -1298,12 +1357,13 @@ def cat_heredoc(inner: str) -> str | None:
     cmd = commands[0]
     if cmd.words not in (["cat"], ["cat", "-"]) or cmd.subs or cmd.redirects:
         return None
-    if len(cmd.stdin_scripts) != 1:
+    if len(cmd.stdin_scripts) != 1 or len(cmd.heredocs_quoted) != 1:
         return None
     body = cmd.stdin_scripts[0]
-    quoted = re.search(r"<<-?[ \t]*['\"\\]", inner) is not None
-    if not quoted and any(c in body for c in "$`\\"):
+    if not cmd.heredocs_quoted[0] and any(c in body for c in "$`\\"):
         return None  # an unquoted delimiter: the shell expands the body
+    if CAT_REDEFINED.search(WHOLE_COMMAND.replace(body, "")):
+        return None  # `cat` may not be the cat that prints it
     return body.rstrip("\n")
 
 
@@ -1342,6 +1402,7 @@ def tokenize(text: str) -> list[Token]:
                     break
                 body.append(line)
             tok.heredoc = "\n".join(body)
+            tok.heredoc_quoted = delim_quoted
             if not delim_quoted:
                 tok.subs.extend(substitutions(tok.heredoc))
         pending.clear()
@@ -1380,6 +1441,13 @@ def tokenize(text: str) -> list[Token]:
             if op in ("<<", "<<-"):
                 expect_delimiter = tok
             i += len(op)
+            continue
+        if in_word and c == "(" and ARRAY_ASSIGNMENT.fullmatch("".join(word)):
+            inner, k = read_balanced(text, i + 1)  # `Q=(a b)`: an array
+            subs.extend(substitutions(inner))
+            word.append(text[i:k])
+            expands = opaque = True
+            i = k
             continue
         if not in_word or c in ";|&()":
             op = next((o for o in OPERATORS if text.startswith(o, i)), None)
@@ -1493,6 +1561,7 @@ def parse(text: str) -> list[Command]:
             cmd.subs.extend(tok.subs)
             if tok.heredoc is not None:
                 cmd.stdin_scripts.append(tok.heredoc)
+                cmd.heredocs_quoted.append(tok.heredoc_quoted)
             elif i + 1 < len(tokens) and tokens[i + 1].kind == "word":
                 i += 1
                 cmd.subs.extend(tokens[i].subs)
@@ -1538,10 +1607,13 @@ def check(text: str, depth: int = 0) -> Verdict:
 
 def check_command(cmd: Command, shell_env: dict[str, str], text: str, depth: int) -> Verdict:
     words, env, i = cmd.words, dict(shell_env), 0
-    while i < len(words) and ASSIGNMENT.match(words[i]):
-        k, v = words[i].split("=", 1)
-        env[k] = v
-        track(env, words[i])
+    while i < len(words) and ANY_ASSIGNMENT.match(words[i]):
+        if ASSIGNMENT.match(words[i]):
+            k, v = words[i].split("=", 1)
+            env[k] = v
+            track(env, words[i])
+        else:
+            untrack(env, [words[i]])
         i += 1
     if i < len(words):
         # `Q=x gh api ... "$Q"`: the shell expands $Q before the prefix applies.
@@ -1589,18 +1661,13 @@ def check_argv(
             if ASSIGNMENT.match(a):
                 k, v = a.split("=", 1)
                 shell_env[k] = v
-        if name == "export" and not any(a.startswith("-") for a in args):
-            for a in args:
-                if ASSIGNMENT.match(a):
-                    track(shell_env, a)
-        else:
-            untrack(shell_env, args)
+        apply_setters(name, args, shell_env)
         return ALLOWED
-    if name in UNTRACKED_SETTERS:
-        untrack(shell_env, args, ("REPLY", "MAPFILE", "OPTARG", "OPTIND"))
-    if name in ("eval", "source", "."):
-        for k in [k for k in shell_env if k.startswith(RESOLVED)]:
-            del shell_env[k]  # it can set any variable
+    apply_setters(name, args, shell_env)
+    if name in ("command", "builtin"):
+        inner = [a for a in args if not a.startswith("-")]
+        if inner:
+            apply_setters(os.path.basename(inner[0]), inner[1:], shell_env)
     if name == "eval":
         return check(" ".join(args), depth + 1)
     if name in ("source", ".") and args:
@@ -1610,7 +1677,8 @@ def check_argv(
     if name in SHELLS:
         return check_shell(args, cmd, text, depth)
     if name in ("xargs", "parallel"):
-        return worst([check_wrapper(args, env, cmd, shell_env, text, depth), fed_gh_api(args)])
+        fed = fed_gh_api(name, args, env)
+        return worst([check_wrapper(args, env, cmd, shell_env, text, depth), fed])
     if name in WRAPPERS or (name == "uv" and args[:1] == ["run"]):
         return check_wrapper(args, env, cmd, shell_env, text, depth)
     rule = RULES.get(name)
@@ -1624,28 +1692,52 @@ UNTRACKED_SETTERS = {
 }  # fmt: skip
 
 
-def fed_gh_api(args: list[str]) -> Verdict:
-    """`xargs gh api ...` and `parallel gh api ...`: a write whose endpoint or values
-    come from the input asks."""
+# GNU parallel's replacement strings.
+PARALLEL_REPLACEMENT = re.compile(r"\{(\d*)(|\.|/|//|/\.|#|%)\}")
+PARALLEL_INPUTS = {":::", "::::", ":::+", "::::+"}
+
+
+def fed_gh_api(name: str, args: list[str], env: dict[str, str]) -> Verdict:
+    """`xargs gh api ...` and `parallel gh api ...`. The input becomes arguments, which
+    may be flags (`-X PUT`), so it asks unless a replacement string (`xargs -I{}`, or
+    parallel's `{}`) fixes where the input goes, and the input goes nowhere a flag
+    could be. Where it goes, it is a value the guard can't read."""
     words = [os.path.basename(a) for a in args]
-    if "gh" not in words or "api" not in words[words.index("gh") :]:
+    if "gh" not in words:
+        if any(re.search(r"\bgh\b.*\bapi\b", a) for a in args):
+            return ask("gh-api", f"{name} runs gh api with arguments from its input")
         return ALLOWED
-    rest = args[words.index("gh") :]
-    for j, a in enumerate(rest):
-        name = a.split("=", 1)[0]
-        if name in ("-f", "-F", "--field", "--raw-field", "--input") or (
-            a[:2] in ("-f", "-F") and len(a) > 2
-        ):
-            break
-        if name in ("-X", "--method") or (a.startswith("-X") and len(a) > 2):
-            method = a[2:] if a.startswith("-X") and len(a) > 2 else a.partition("=")[2]
-            if not method and j + 1 < len(rest):
-                method = rest[j + 1]
-            if method.upper() not in ("GET", "HEAD"):
-                break
+    g = words.index("gh")
+    gh_args = args[g + 1 :]
+    if name == "parallel":
+        cut = next((k for k, a in enumerate(gh_args) if a in PARALLEL_INPUTS), len(gh_args))
+        gh_args = gh_args[:cut]
+    if "api" not in gh_args:
+        return ALLOWED
+    replace = None
+    for k, a in enumerate(args[:g]):
+        if a == "-I" and k + 1 < g:
+            replace = args[k + 1]
+        elif a.startswith("--replace"):
+            replace = a.partition("=")[2] or "{}"
+        elif a.startswith("-I") and len(a) > 2:
+            replace = a[2:]
+        elif a.startswith("-i") and name == "xargs":
+            replace = a[2:] or "{}"
+    if replace:
+        where = re.compile(re.escape(replace))
+    elif name == "parallel":
+        where = PARALLEL_REPLACEMENT
     else:
-        return ALLOWED
-    return ask("gh-api", "gh api writes with an endpoint or values from its input")
+        where = None
+    if where is None or not any(where.search(a) for a in gh_args):
+        return ask("gh-api", f"{name} gives gh api arguments from its input")
+    fed = []
+    for a in gh_args:
+        if where.match(a):
+            return ask("gh-api", f"{name} puts its input where gh api reads a flag")
+        fed.append(Unresolved(where.sub("$INPUT", a), True) if where.search(a) else a)
+    return gh_rule(fed, env)
 
 
 # Aliases set earlier in the command live in its environment under this prefix, which
@@ -1718,6 +1810,8 @@ def check_env(
             k, v = a.split("=", 1)
             env[k] = v
             i += 1
+        elif "=" in a:
+            i += 1  # env takes any NAME=value, whatever the name holds
         else:
             return check_argv(args[i:], env, cmd, shell_env, text, depth)
     return ALLOWED
@@ -1834,6 +1928,8 @@ def decide(command: str, config_path: str) -> Verdict:
             "fix it with the Edit tool (agent/README.md in those-who-run/.github says what "
             "it holds)",
         )
+    global WHOLE_COMMAND
+    WHOLE_COMMAND = command
     return check(command)
 
 

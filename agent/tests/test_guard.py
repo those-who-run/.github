@@ -286,6 +286,8 @@ OUTWARD = [
     # the same, wrapped
     ("watch -n 5 'kubectl delete pod x'", "watch -n 5 'kubectl get pods'"),
     ("env KUBECONFIG=/x kubectl delete pod x", "env KUBECONFIG=/x kubectl get pods"),
+    ("env 'A%%=x' git push origin main", "env 'A%%=x' git push origin feat/x"),
+    ("env 'A B=x' bash -c 'gh release create v1'", "env 'A B=x' bash -c 'gh release list'"),
     ('echo "$(gh release create v1)"', 'echo "$(gh release list)"'),
 ]
 
@@ -570,11 +572,126 @@ FED_BLOCKS = [
 
 FED_READS = [
     "gh api --help",
-    "xargs -n1 gh api < endpoints",
-    "xargs -I{} gh api {} -X GET < endpoints",
-    "parallel gh api {} ::: repos/o/r repos/o/s",
+    "xargs -I{} gh api repos/o/r/pulls/{} < prs",
+    "xargs -I % gh api repos/o/r/pulls/% < prs",
+    "xargs --replace gh api repos/o/r/pulls/{}/files < prs",
+    "xargs -i gh api repos/{owner}/{repo}/pulls/{} < prs",
+    "parallel gh api repos/o/r/pulls/{} ::: 1 2",
+    "parallel -I ,, gh api repos/o/r/pulls/,, ::: 1 2",
     "xargs gh pr view < prs",
     "xargs -n1 echo -f < f",
+]
+
+HEREDOC_VIEWER = f"$(cat <<'EOF'\n{VIEWER}\nEOF\n)"
+
+# (command, verdict): the here-document's own delimiter says whether it is literal.
+HEREDOC_QUOTING = [
+    (
+        'read -r M < m.txt; gh api graphql -f query="$(cat <<EOF\n# <<"\n'
+        'mutation { ${M}(input:{}) { x } }\nEOF\n)"',
+        "ask",
+    ),
+    ("gh api graphql -f query=\"$(cat <<EOF\n# <<'\nmutation { $M }\nEOF\n)\"", "ask"),
+    ('gh api graphql -f query="$(cat <<EOF\n# <<\\\\\n$M\nEOF\n)"', "ask"),
+    (f"gh api graphql -f query=\"$(cat <<\\EOF\n{MERGE} $M\nEOF\n)\"", "block"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\n{AUTO_MERGE} $M\nEOF\n)\"", "ask"),
+    (f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ x(a: \\\"$M\\\") }}\nEOF\n)\"", "allow"),
+]
+
+# What can make `cat` print something else: the here-document isn't read after these.
+CAT_REDEFINED = [
+    f"cat() {{ echo '{MERGE}'; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"cat () {{ echo x; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"function cat {{ echo x; }}; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"PATH=./bin:$PATH; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"export PATH=./bin; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"PATH=./bin gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"alias cat=./x; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"alias 'cat=./x'; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"hash -p ./x cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"enable -f ./x.so cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"eval \"$DEF\"; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"eval true; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"source defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f". defs.sh; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    "env 'BASH_FUNC_cat%%=() { echo x; }' bash -c 'gh api graphql -f query=\"$(cat <<\\EOF\n"
+    + VIEWER
+    + "\nEOF\n)\"'",
+]
+
+CAT_NOT_REDEFINED = [
+    f"gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"echo cat; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"echo \"$PATH\"; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"cat x.txt; gh api graphql -f query=\"{HEREDOC_VIEWER}\"",
+    f"gh api graphql -f query=\"$(cat <<'EOF'\nquery {{ source {{ hash }} }}\nEOF\n)\"",
+]
+
+# Assignments and builtins after which a variable's earlier value isn't used.
+STALE_VALUES = [
+    *(
+        f"Q='{VIEWER}'; {change}; gh api graphql -f query=\"$Q\""
+        for change in (
+            "Q[0]='mutation { x }'", "Q=('mutation { x }')", "Q+=' mutation { x }'",
+            "Q[1]+=x", "export Q+=x", "export Q[0]=x", "declare -n R=Q", "typeset -n R=Q",
+            "local -n R=Q", "declare -rn R=Q",
+            "command read Q", "builtin read Q", "command -p read Q", "builtin mapfile Q",
+            "builtin declare Q=x", "builtin export Q=$(cat f)", "command unset Q",
+            "trap 'Q=x' DEBUG", "trap - DEBUG", "Q=x; f() { Q=y; }; f", "function f { :; }",
+        )
+    ),
+    f"Q='{VIEWER}'; declare -n R=Q; R=x; gh api graphql -f query=\"$Q\"",
+    f"trap 'Q=x' DEBUG; Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"declare -n R=Q; Q='{VIEWER}'; gh api graphql -f query=\"$Q\"",
+    f"REPLY='{VIEWER}'; read; gh api graphql -f query=\"$REPLY\"",
+    f"MAPFILE='{VIEWER}'; mapfile < f; gh api graphql -f query=\"$MAPFILE\"",
+    f"Q='{VIEWER}'; Q+=x gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; Q[0]=x gh api graphql -f query=\"$Q\"",
+]  # fmt: skip
+
+# Values the guard still reads.
+STILL_READ = [
+    f"Q='{VIEWER}'; R[0]=x; S+=y; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; command read R; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; builtin export Q; gh api graphql -f query=\"$Q\"",
+    f"Q='{VIEWER}'; declare -r R=x; gh api graphql -f query=\"$Q\"",
+]
+
+# xargs and parallel: where the input can go.
+FED_INPUT = [
+    ("echo '-X PUT' | xargs gh api repos/o/r/pulls/1/merge", "ask"),
+    (f"echo '-f query={MERGE}' | xargs gh api graphql", "ask"),
+    ("xargs gh api repos/o/r/pulls/1 < f", "ask"),
+    ("xargs -n1 gh api < endpoints", "ask"),
+    ("parallel gh api ::: repos/o/r", "ask"),
+    ("xargs -I{} gh api repos/o/r/pulls/1/merge {} < f", "ask"),
+    ("xargs -I{} gh api {} < f", "ask"),
+    ("xargs -I{} gh api -X {} repos/o/r/pulls/1/merge < f", "block"),
+    ("xargs -I{} gh api -X {} repos/o/r/labels < f", "ask"),
+    ("xargs -I{} gh api {}-X repos/o/r < f", "ask"),
+    ("parallel gh api {} ::: repos/o/r repos/o/s", "ask"),
+    ("parallel gh api repos/o/r/pulls/1/merge {.} ::: x", "ask"),
+    ("xargs -I{} gh api graphql -f query={} < f", "ask"),
+    ("xargs -I{} gh api graphql -f 'query=query { x(a: \"{}\") }' < f", "ask"),
+    ("xargs -I{} gh api -X PUT repos/o/r/pulls/{}/merge < prs", "block"),
+    ("xargs -I % gh api -X PUT repos/o/r/pulls/%/merge < prs", "block"),
+    ("parallel gh api -X POST repos/o/r/{} ::: rulesets", "block"),
+    ("parallel -I ,, gh api -X PUT repos/o/r/pulls/,,/merge ::: 1", "block"),
+    ("xargs -I{} gh api -X POST repos/o/r/labels/{} < f", "ask"),
+    ("xargs sh -c 'gh api \"$1\"' _ < f", "ask"),
+    ("xargs -n1 gh pr view < prs", "allow"),
+    ("xargs -I{} gh api repos/o/r/pulls/{} < prs", "allow"),
+    ("parallel gh api repos/o/r/pulls/{} ::: {} 2", "allow"),
+]
+
+# Brace expansion with quoted parts gives the word bash builds from it.
+QUOTED_BRACES = [
+    (f"gh api {{\"graphql\",}} -f query='{MERGE}'", "block"),
+    (f"gh api {{'graphql',}} -f query='{MERGE}'", "block"),
+    (f"gh api {{'graphql',}} -f query='{AUTO_MERGE}'", "ask"),
+    (f"gh api {{\"graph\"ql,}} -f query='{VIEWER}'", "ask"),
+    (f"gh api graphql -f query={{\"{VIEWER}\",}}", "ask"),
+    (f"gh api graphql -f query='{{\"a\",}}{VIEWER}'", "allow"),
 ]
 
 GITHUB_READS = [
@@ -977,6 +1094,32 @@ class ReadingWhatTheShellPasses(GuardTest):
 
     def test_reads_fed_from_input_pass(self):
         self.assert_decisions("allow", FED_READS)
+
+
+class WhatTheShellMayChange(GuardTest):
+    def assert_verdicts(self, cases):
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(command), expected)
+
+    def test_a_heredoc_is_literal_by_its_own_delimiter(self):
+        self.assert_verdicts(HEREDOC_QUOTING)
+
+    def test_a_heredoc_is_not_read_when_cat_may_be_something_else(self):
+        self.assert_decisions("ask", CAT_REDEFINED)
+        self.assert_decisions("allow", CAT_NOT_REDEFINED)
+
+    def test_values_the_command_may_have_changed_are_not_used(self):
+        self.assert_decisions("ask", STALE_VALUES)
+        self.assert_decisions("allow", STILL_READ)
+
+    def test_input_fed_to_gh_api(self):
+        self.assert_verdicts(FED_INPUT)
+
+    def test_brace_expansion_with_quoted_parts(self):
+        self.assert_verdicts(QUOTED_BRACES)
+        (cmd,) = guard.parse('echo {"a",b}')
+        self.assertIsInstance(cmd.words[1], guard.Unresolved)
 
 
 class AskReasons(GuardTest):
