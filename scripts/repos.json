@@ -33,7 +33,8 @@
       "issues": false,
       "publishes": false,
       "tags": ["v*"],
-      "codeql": []
+      "codeql": [],
+      "merge_queue": true
     },
     "those-who-run/contracts": {
       "checks": ["test", "checks / checks", "go / check"],
