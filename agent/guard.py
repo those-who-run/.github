@@ -67,7 +67,7 @@ KEYWORDS = {"!", "{", "}", "if", "then", "else", "elif", "do", "while", "until",
 WRAPPERS = {
     "sudo", "doas", "nice", "ionice", "nohup", "timeout", "stdbuf", "command", "builtin",
     "exec", "xargs", "watch", "setsid", "chronic", "unbuffer", "flock", "caffeinate",
-    "strace", "ltrace", "unshare", "chroot", "runuser",
+    "strace", "ltrace", "unshare", "chroot", "runuser", "parallel",
 }  # fmt: skip
 
 
@@ -472,8 +472,6 @@ FILE_WRITERS = {
 # A redirection that writes its target.
 WRITE_REDIRECTIONS = {">", ">>", ">|", "&>", "&>>", "<>", ">&"}
 VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
-# A parameter expansion: $name, ${...}, or a special parameter such as $1 or $@.
-PARAMETER = re.compile(r"\$([A-Za-z_{]|[0-9@*#?$!-])")
 
 
 def expand(word: str, env: dict[str, str]) -> str:
@@ -530,21 +528,42 @@ GH_ASK = {
     ("pr", "close"), ("pr", "merge"), ("pr", "ready"),
 }  # fmt: skip
 GH_ASK_WHY = {("pr", "merge"): "merging is the maintainer's decision"}
-# gh api: a write (any method but GET or HEAD) to one of these blocks.
-GH_API_PROTECTED = re.compile(
-    r"""^(
-        repos/[^/]+/[^/]+/?$                       # the repository itself
-      | repos/[^/]+/[^/]+/(
-            rulesets | actions/permissions | environments | collaborators | invitations
-          | hooks | keys | branches/[^/]+/protection | actions/secrets | actions/variables
-          | releases | git/refs | git/tags | dispatches | actions/workflows/[^/]+/
-          | actions/runs/[^/]+/rerun | pulls/[^/]+/merge | transfer | topics
-          | vulnerability-alerts | automated-security-fixes | deployments
+# gh api paths, as (shape, how it matches): `*` is any one segment; "exact" is the
+# whole path (a trailing `/` aside), "prefix" its start, and "segment" its start up to
+# a `/` or the end.
+ApiShape = tuple[str, str]
+# A write (any method but GET or HEAD) to one of these blocks.
+GH_API_PROTECTED_SHAPES: list[ApiShape] = [
+    ("repos/*/*", "exact"),  # the repository itself
+    *(
+        (f"repos/*/*/{rest}", "prefix")
+        for rest in (
+            "rulesets", "actions/permissions", "environments", "collaborators",
+            "invitations", "hooks", "keys", "branches/*/protection", "actions/secrets",
+            "actions/variables", "releases", "git/refs", "git/tags", "dispatches",
+            "actions/workflows/*/", "actions/runs/*/rerun", "pulls/*/merge", "transfer",
+            "topics", "vulnerability-alerts", "automated-security-fixes", "deployments",
         )
-      | orgs/[^/]+ | user(/|$)
-    )""",
-    re.X,
-)
+    ),
+    ("orgs/*", "prefix"),
+    ("user", "segment"),
+]  # fmt: skip
+
+
+def shapes_regex(shapes: list[ApiShape]) -> re.Pattern[str]:
+    ends = {"exact": "/?$", "prefix": "", "segment": "(/|$)"}
+    return re.compile(
+        "^("
+        + "|".join(
+            "/".join("[^/]+" if s == "*" else re.escape(s) for s in shape.split("/"))
+            + ends[how]
+            for shape, how in shapes
+        )
+        + ")"
+    )
+
+
+GH_API_PROTECTED = shapes_regex(GH_API_PROTECTED_SHAPES)
 # GraphQL mutations that do what the blocked commands do.
 GH_GRAPHQL_PROTECTED = re.compile(
     r"\b(mergePullRequest|updateRepository|deleteRepository|archiveRepository|"
@@ -556,7 +575,11 @@ GH_GRAPHQL_AUTO_MERGE = re.compile(
     r"\b((enable|disable)PullRequestAutoMerge|(enqueue|dequeue)PullRequest)\b"
 )
 # What `gh issue|pr create|comment|edit|close|review` do, through the API: ask, as they do.
-GH_API_POSTS = re.compile(r"^repos/[^/]+/[^/]+/(issues|pulls)(/|$)")
+GH_API_POSTS_SHAPES: list[ApiShape] = [
+    ("repos/*/*/issues", "segment"),
+    ("repos/*/*/pulls", "segment"),
+]
+GH_API_POSTS = shapes_regex(GH_API_POSTS_SHAPES)
 GH_GRAPHQL_POSTS = re.compile(
     r"\b(addComment|updateIssueComment|addPullRequestReview\w*|submitPullRequestReview|"
     r"(create|update|close|reopen|delete)(Issue|PullRequest)|addDiscussionComment)\b"
@@ -620,13 +643,44 @@ def gh_rule(args: list[str], env: dict[str, str]) -> Verdict:
     return worst(verdicts)
 
 
+# What a variable holds, for one the command sets with a plain NAME=value the guard
+# can read. Kept in the environment under this prefix, which no variable name can have.
+RESOLVED = "value "
+
+
 def readable(word: str, env: dict[str, str]) -> str | None:
     """The word as the shell will pass it, or None when an expansion in it can't be
     resolved from what the command itself sets."""
     if not isinstance(word, Unresolved):
         return word
-    text = expand(word, env)
-    return None if PARAMETER.search(text) or "$(" in text or "`" in text else text
+    if word.opaque:
+        return None
+    pieces, pos = [], 0
+    for m in BARE.finditer(word):
+        value = env.get(RESOLVED + (m.group(1) or m.group(2)))
+        if value is None:
+            return None
+        pieces += [word[pos : m.start()], value]
+        pos = m.end()
+    return "".join(pieces) + word[pos:]
+
+
+def track(env: dict[str, str], word: str) -> None:
+    """Record what a plain NAME=value assignment leaves the variable holding."""
+    name = word.split("=", 1)[0]
+    value = readable(word, env)
+    if value is None:
+        env.pop(RESOLVED + name, None)
+    else:
+        env[RESOLVED + name] = value[len(name) + 1 :]
+
+
+def untrack(env: dict[str, str], args: list[str], also: tuple[str, ...] = ()) -> None:
+    """Forget the variables that a command sets in a way the guard doesn't follow."""
+    for a in [*args, *also]:
+        m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", a)
+        if m:
+            env.pop(RESOLVED + m.group(0), None)
 
 
 # A full URL that gh sends to as it is: the GitHub API's host, or a GitHub Enterprise
@@ -638,7 +692,7 @@ def api_path(endpoint: str) -> str | None:
     """The path `gh api` sends a request to, as gh reads its endpoint argument (a full
     URL as it is, anything else under the API's root), or None for a URL the guard
     can't map to one."""
-    target = re.split(r"[?#]", endpoint, maxsplit=1)[0]
+    target = without_query(endpoint)
     if "://" not in endpoint:
         return target.lstrip("/")
     m = GH_API_URL.match(target)
@@ -655,6 +709,63 @@ def api_path(endpoint: str) -> str | None:
 
 
 UNREADABLE = "a value the guard can't read before it runs"
+
+
+def without_query(endpoint: str) -> str:
+    """The endpoint up to its `?query` or `#fragment`, leaving a `?` or `#` inside an
+    expansion (`${x#y}`, `$(...)`) where it is."""
+    depth = 0
+    for i, c in enumerate(endpoint):
+        if c in "{(":
+            depth += 1
+        elif c in "})":
+            depth = max(depth - 1, 0)
+        elif c in "?#" and depth == 0 and endpoint[i - 1 : i] != "$":
+            return endpoint[:i]
+    return endpoint
+
+
+ANY = "*"  # a segment of an endpoint the guard can't read: it may be any one segment
+
+
+def endpoint_segments(endpoint: str) -> list[str] | None:
+    """The segments of an endpoint as written, each one with an expansion in it as ANY.
+    None when nothing in it can be read: a URL the guard can't map, or one expansion
+    that is the whole endpoint."""
+    path = api_path(endpoint)
+    if path is None:
+        return None
+    segments, depth, start = [], 0, 0
+    for i, c in enumerate(path + "/"):
+        if c in "{(":
+            depth += 1
+        elif c in "})":
+            depth = max(depth - 1, 0)
+        elif c == "/" and depth == 0:
+            segments.append(path[start:i])
+            start = i + 1
+    marks = re.compile(r"[$`*?\[]|\{[^{}]*(,|\.\.)[^{}]*\}")
+    segments = [ANY if marks.search(s) else s for s in segments]
+    # A lone expansion may hold a whole path, any number of segments.
+    return None if segments == [ANY] else segments
+
+
+def fits(segments: list[str], shape: ApiShape) -> bool:
+    """Whether an endpoint, ANY standing for any one segment, can be a path the shape
+    matches."""
+    parts, how = shape[0].split("/"), shape[1]
+    if len(segments) < len(parts):
+        return False
+    if how == "exact" and segments[len(parts) :] not in ([], [""]):
+        return False
+    for k, (seg, part) in enumerate(zip(segments, parts)):
+        last = k == len(parts) - 1
+        if seg == ANY or part == "*" or seg == part:
+            continue
+        if how == "prefix" and last and seg.startswith(part):
+            continue
+        return False
+    return True
 
 
 def gh_api_rule(args: list[str], env: dict[str, str]) -> Verdict:
@@ -694,16 +805,30 @@ def gh_api_rule(args: list[str], env: dict[str, str]) -> Verdict:
         i += 1
     if method is None:
         method = "POST" if fields or has_input else "GET"
-    if endpoint is None or method in ("GET", "HEAD"):
+    if method in ("GET", "HEAD"):
         return ALLOWED
+    if endpoint is None:
+        return ask("gh-api", f"{method} with no endpoint the guard can see")
     target = readable(endpoint, env)
     path = None if target is None else api_path(target)
     if path is None:
-        # Where it goes is unknown, so it is checked as GraphQL too: a mutation that
-        # blocks still blocks, auto-merge asks as itself, and anything else asks.
+        # Where it goes is unknown, so it is checked as written: as GraphQL, where a
+        # mutation that blocks still blocks and auto-merge asks as itself, and against
+        # the REST paths, a part it can't read standing for any one segment.
         verdict = graphql_rule(" ".join(fields), has_input, unreadable)
-        if verdict.level == BLOCK or verdict.rule == "gh-auto-merge":
+        if verdict.level == BLOCK:
             return verdict
+        segments = endpoint_segments(endpoint) if target is None else None
+        if segments and any(fits(segments, sh) for sh in GH_API_PROTECTED_SHAPES):
+            return block(
+                "gh-api",
+                f"{method} {endpoint} can change the repository's settings, releases or "
+                "refs, whatever its variables hold",
+            )
+        if verdict.rule == "gh-auto-merge":
+            return verdict
+        if segments and any(fits(segments, sh) for sh in GH_API_POSTS_SHAPES):
+            return ask("gh-api", f"{method} {endpoint} posts in public")
         if target is None:
             return ask("gh-api", f"the endpoint is {UNREADABLE}")
         return ask("gh-api", f"{target} is a URL the guard can't map to an API path")
@@ -1004,12 +1129,22 @@ class Token:
     text: str
     subs: list[str] = field(default_factory=list)  # $(...), `...` and <(...) inside it
     heredoc: str | None = None  # the body of a << here-document
-    expands: bool = False  # it has a $VAR, ${...}, $(...) or `...` outside single quotes
+    expands: bool = False  # it has an expansion outside single quotes
+    opaque: bool = False  # one that isn't a plain $NAME or ${NAME}
 
 
 class Unresolved(str):
     """A word with a shell expansion in it: its text is what the command says, not what
-    the shell will pass."""
+    the shell will pass. `opaque` when an expansion in it is anything but a plain $NAME
+    or ${NAME} (a substitution, a ${...} with an operator, $'...', a glob or a brace
+    expansion), which the guard never resolves."""
+
+    opaque: bool
+
+    def __new__(cls, text: str, opaque: bool) -> Unresolved:
+        word = super().__new__(cls, text)
+        word.opaque = opaque
+        return word
 
 
 @dataclass
@@ -1128,6 +1263,50 @@ def substitutions(text: str) -> list[str]:
     return subs
 
 
+# A plain parameter expansion, the only kind the guard resolves: $NAME or ${NAME}.
+BARE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+BRACE_EXPANSION = re.compile(r"\{[^{}\s'\"]*(,|\.\.)[^{}\s'\"]*\}")
+
+
+def dollar(text: str, i: int, quoted: bool) -> str | None:
+    """What the `$` at i starts: "bare" for $NAME or ${NAME}, "opaque" for any other
+    expansion, None for a literal `$`."""
+    if text[i] != "$":
+        return None
+    nxt = text[i + 1 : i + 2]
+    if nxt == "{":
+        m = BARE.match(text, i)
+        return "bare" if m and m.group(2) else "opaque"
+    if nxt.isascii() and (nxt.isalpha() or nxt == "_"):
+        return "bare"
+    if nxt and nxt in "0123456789@*#?$!-":
+        return "opaque"
+    if nxt == '"' and not quoted:
+        return "opaque"  # $"...", a translated string
+    return None
+
+
+def cat_heredoc(inner: str) -> str | None:
+    """The text of `$(cat <<'EOF' ... EOF)`: a substitution that only prints a
+    here-document the guard has read. None for any other substitution."""
+    try:
+        commands = parse(inner)
+    except ParseError:
+        return None
+    if len(commands) != 1:
+        return None
+    cmd = commands[0]
+    if cmd.words not in (["cat"], ["cat", "-"]) or cmd.subs or cmd.redirects:
+        return None
+    if len(cmd.stdin_scripts) != 1:
+        return None
+    body = cmd.stdin_scripts[0]
+    quoted = re.search(r"<<-?[ \t]*['\"\\]", inner) is not None
+    if not quoted and any(c in body for c in "$`\\"):
+        return None  # an unquoted delimiter: the shell expands the body
+    return body.rstrip("\n")
+
+
 def tokenize(text: str) -> list[Token]:
     tokens: list[Token] = []
     word: list[str] = []
@@ -1135,21 +1314,22 @@ def tokenize(text: str) -> list[Token]:
     in_word = False
     quoted = False  # whether the current word has quotes or backslashes in it
     expands = False  # whether it has an expansion outside single quotes
+    opaque = False  # whether one of them is more than a plain $NAME or ${NAME}
     pending: list[tuple[Token, str, bool, bool]] = []  # here-documents awaiting a body
     expect_delimiter: Token | None = None
     i, n = 0, len(text)
 
     def end_word() -> None:
-        nonlocal word, subs, in_word, quoted, expands, expect_delimiter
+        nonlocal word, subs, in_word, quoted, expands, opaque, expect_delimiter
         if in_word:
-            tok = Token("word", "".join(word), subs, expands=expands)
+            tok = Token("word", "".join(word), subs, expands=expands, opaque=opaque)
             if expect_delimiter is not None:
                 strip_tabs = expect_delimiter.text == "<<-"
                 pending.append((expect_delimiter, tok.text, strip_tabs, quoted))
                 expect_delimiter = None
             else:
                 tokens.append(tok)
-        word, subs, in_word, quoted, expands = [], [], False, False, False
+        word, subs, in_word, quoted, expands, opaque = [], [], False, False, False, False
 
     def read_heredocs(i: int) -> int:
         for tok, delim, strip_tabs, delim_quoted in pending:
@@ -1228,6 +1408,7 @@ def tokenize(text: str) -> list[Token]:
             if j >= n:
                 raise ParseError("unterminated $'")
             word.append(text[i + 2 : j])
+            expands = opaque = True  # bash decodes the escapes in it
             i = j + 1
         elif c == '"':
             j = i + 1
@@ -1246,34 +1427,48 @@ def tokenize(text: str) -> list[Token]:
                 elif text.startswith("$(", j):
                     inner, k = read_balanced(text, j + 2)
                     subs.append(inner)
-                    word.append(text[j:k])
-                    expands = True
+                    body = cat_heredoc(inner)
+                    if body is None:
+                        word.append(text[j:k])
+                        expands = opaque = True
+                    else:
+                        word.append(body)
                     j = k
                 elif d == "`":
                     inner, k = read_backquoted(text, j + 1)
                     subs.append(inner)
                     word.append(text[j:k])
-                    expands = True
+                    expands = opaque = True
                     j = k
                 else:
-                    expands = expands or PARAMETER.match(text, j) is not None
+                    kind = dollar(text, j, quoted=True)
+                    expands = expands or kind is not None
+                    opaque = opaque or kind == "opaque"
                     word.append(d)
                     j += 1
             i = j + 1
         elif text.startswith("$(", i):
             inner, k = read_balanced(text, i + 2)
             subs.append(inner)
-            word.append(text[i:k])
-            expands = True
+            body = cat_heredoc(inner)
+            if body is None:
+                word.append(text[i:k])
+                expands = opaque = True
+            else:
+                word.append(body)
             i = k
         elif c == "`":
             inner, k = read_backquoted(text, i + 1)
             subs.append(inner)
             word.append(text[i:k])
-            expands = True
+            expands = opaque = True
             i = k
         else:
-            expands = expands or PARAMETER.match(text, i) is not None
+            kind = dollar(text, i, quoted=False)
+            if c in "*?[" or (c == "{" and BRACE_EXPANSION.match(text, i)):
+                kind = "opaque"  # a glob or a brace expansion
+            expands = expands or kind is not None
+            opaque = opaque or kind == "opaque"
             word.append(c)
             i += 1
     end_word()
@@ -1305,7 +1500,7 @@ def parse(text: str) -> list[Command]:
                 if tok.text == "<<<":
                     cmd.stdin_scripts.append(tokens[i].text)
         else:
-            cmd.words.append(Unresolved(tok.text) if tok.expands else tok.text)
+            cmd.words.append(Unresolved(tok.text, tok.opaque) if tok.expands else tok.text)
             cmd.subs.extend(tok.subs)
         i += 1
     if cmd.words or cmd.subs or cmd.stdin_scripts or cmd.redirects:
@@ -1346,7 +1541,11 @@ def check_command(cmd: Command, shell_env: dict[str, str], text: str, depth: int
     while i < len(words) and ASSIGNMENT.match(words[i]):
         k, v = words[i].split("=", 1)
         env[k] = v
+        track(env, words[i])
         i += 1
+    if i < len(words):
+        # `Q=x gh api ... "$Q"`: the shell expands $Q before the prefix applies.
+        untrack(env, words[:i])
     files = [
         v
         for op, t in cmd.redirects
@@ -1357,6 +1556,7 @@ def check_command(cmd: Command, shell_env: dict[str, str], text: str, depth: int
         )
     ]
     if i == len(words):
+        shell_env.clear()
         shell_env.update(env)
         return worst(files)
     return worst([*files, check_argv(words[i:], env, cmd, shell_env, text, depth)])
@@ -1389,7 +1589,18 @@ def check_argv(
             if ASSIGNMENT.match(a):
                 k, v = a.split("=", 1)
                 shell_env[k] = v
+        if name == "export" and not any(a.startswith("-") for a in args):
+            for a in args:
+                if ASSIGNMENT.match(a):
+                    track(shell_env, a)
+        else:
+            untrack(shell_env, args)
         return ALLOWED
+    if name in UNTRACKED_SETTERS:
+        untrack(shell_env, args, ("REPLY", "MAPFILE", "OPTARG", "OPTIND"))
+    if name in ("eval", "source", "."):
+        for k in [k for k in shell_env if k.startswith(RESOLVED)]:
+            del shell_env[k]  # it can set any variable
     if name == "eval":
         return check(" ".join(args), depth + 1)
     if name in ("source", ".") and args:
@@ -1398,10 +1609,43 @@ def check_argv(
         return check_env(args, env, cmd, shell_env, text, depth)
     if name in SHELLS:
         return check_shell(args, cmd, text, depth)
+    if name in ("xargs", "parallel"):
+        return worst([check_wrapper(args, env, cmd, shell_env, text, depth), fed_gh_api(args)])
     if name in WRAPPERS or (name == "uv" and args[:1] == ["run"]):
         return check_wrapper(args, env, cmd, shell_env, text, depth)
     rule = RULES.get(name)
     return worst([secret_args(name, args, env), rule(args, env) if rule else ALLOWED])
+
+
+# Builtins that set the variables they name in ways the guard doesn't follow.
+UNTRACKED_SETTERS = {
+    "read", "mapfile", "readarray", "printf", "getopts", "for", "select", "unset", "let",
+    "wait",
+}  # fmt: skip
+
+
+def fed_gh_api(args: list[str]) -> Verdict:
+    """`xargs gh api ...` and `parallel gh api ...`: a write whose endpoint or values
+    come from the input asks."""
+    words = [os.path.basename(a) for a in args]
+    if "gh" not in words or "api" not in words[words.index("gh") :]:
+        return ALLOWED
+    rest = args[words.index("gh") :]
+    for j, a in enumerate(rest):
+        name = a.split("=", 1)[0]
+        if name in ("-f", "-F", "--field", "--raw-field", "--input") or (
+            a[:2] in ("-f", "-F") and len(a) > 2
+        ):
+            break
+        if name in ("-X", "--method") or (a.startswith("-X") and len(a) > 2):
+            method = a[2:] if a.startswith("-X") and len(a) > 2 else a.partition("=")[2]
+            if not method and j + 1 < len(rest):
+                method = rest[j + 1]
+            if method.upper() not in ("GET", "HEAD"):
+                break
+    else:
+        return ALLOWED
+    return ask("gh-api", "gh api writes with an endpoint or values from its input")
 
 
 # Aliases set earlier in the command live in its environment under this prefix, which

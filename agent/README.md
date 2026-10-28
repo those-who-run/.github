@@ -67,11 +67,20 @@ policy.
   a `?query` or a `#fragment`. A write to any other full URL asks; a GraphQL mutation
   the guard blocks still blocks there.
 - **Asks about values it can't read before they run**: a `gh api` endpoint, or any
-  field of a `gh api graphql` call, holding a shell expansion (`$VAR`, `${...}`,
-  `$(...)`, backquotes) that the command doesn't set itself. A variable the command
-  sets (`q='...'; gh api graphql -f query="$q"`) is read, a mutation the guard can
-  still see decides as usual, and text in single quotes (a GraphQL `$owner`) and
-  gh's own placeholders (`{owner}`, `{repo}`) are literal.
+  field of a `gh api graphql` call, holding a shell expansion that the guard doesn't
+  resolve. It resolves only a plain `$NAME` or `${NAME}` whose variable the command
+  line set with a plain `NAME=value` (or `export NAME=value`) it can read
+  (`q='...'; gh api graphql -f query="$q"`); a `${...}` with an operator, `$(...)`,
+  backquotes, `$'...'`, a glob or a brace expansion is never resolved, nor is a
+  variable named in a prefix assignment of the same command, or one set by `read`,
+  `for`, `declare`, `printf -v` and the like. `$(cat <<'EOF' ... EOF)` is read as the
+  here-document it prints. What the guard can still see decides first: a GraphQL
+  mutation, and the REST rules, which it checks on the endpoint as written, a part
+  it can't read standing for any one path segment, so
+  `gh api -X PUT "repos/$O/$R/pulls/$N/merge"` blocks as the literal path does. Text
+  in single quotes (a GraphQL `$owner`) and gh's own placeholders (`{owner}`,
+  `{repo}`) are literal. A `gh api` write with no endpoint the guard can see asks,
+  as does `xargs` or `parallel` running a `gh api` write.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is
   blocked, with the reason, until the file is fixed; the Read and Edit tools still
