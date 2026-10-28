@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12](https://github.com/those-who-run/.github/compare/v0.2.11...v0.2.12) (2026-10-28)
+
+
+### Features
+
+* **protect:** a merge queue on main, per repository, and shared workflows ready for merge_group ([#50](https://github.com/those-who-run/.github/issues/50)) ([541d918](https://github.com/those-who-run/.github/commit/541d918397c7ae8d953acd905e7e1f5891f43b34))
+* **protect:** shakedown-fangio requires the Go and image checks and publishes ([c972766](https://github.com/those-who-run/.github/commit/c9727669b1d9171901b323784bb90f72675bb5e0))
+
 ## [0.2.11](https://github.com/those-who-run/.github/compare/v0.2.10...v0.2.11) (2026-10-27)
 
 
