@@ -105,6 +105,11 @@ done(status=1)
 # the commits), and a fixed identity. setUp fills it in.
 GIT_ENV: dict[str, str] = {}
 
+# The environment without git's own variables: a commit hook runs these tests with
+# GIT_INDEX_FILE and the like set to the committing checkout's, and git in the tests'
+# repositories would write that index instead of their own.
+ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
 
 class Link:
     """A symbolic link in a repository, to target."""
@@ -120,7 +125,7 @@ BOT_ENV = {"GIT_AUTHOR_NAME": "twr-release[bot]", "GIT_AUTHOR_EMAIL": BOT,
 
 def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
-                          env={**os.environ, **GIT_ENV}).stdout
+                          env={**ENV, **GIT_ENV}).stdout
 
 
 def pinned(name: str, sha: str = OLD_SHA, tag: str = OLD) -> str:
@@ -216,7 +221,7 @@ class FanOut(unittest.TestCase):
             (work / f"note-{i}.txt").write_text(f"{i}\n")
             git(work, "add", "-A")
             subprocess.run(["git", "commit", "--quiet", "-m", f"commit {i}"], cwd=work, check=True,
-                           env={**os.environ, **GIT_ENV, **who})
+                           env={**ENV, **GIT_ENV, **who})
         git(work, "push", "--quiet", "origin", branch)
         return git(work, "rev-parse", "HEAD").strip()
 
@@ -225,7 +230,7 @@ class FanOut(unittest.TestCase):
         listing.write_text(json.dumps({"repositories": {r: {} for r in [f"{ORG}/.github", *self.repos]}}))
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--tag", NEW, "--source", str(self.source), "--list", str(listing), *args],
-            env={**os.environ, **self.env}, capture_output=True, text=True,
+            env={**ENV, **self.env}, capture_output=True, text=True,
         )
 
     def calls(self) -> list[dict]:
@@ -283,7 +288,7 @@ class FanOut(unittest.TestCase):
         self.assertEqual(self.run_fan_out().returncode, 0)
         bare = self.tmp / "remotes" / ORG / "ecu.git"
         raw = subprocess.run(["git", "show", f"{BRANCH}:renovate.json"], cwd=bare,
-                             check=True, capture_output=True, env={**os.environ, **GIT_ENV}).stdout
+                             check=True, capture_output=True, env={**ENV, **GIT_ENV}).stdout
         self.assertEqual(raw, RENOVATE.replace(OLD, NEW).replace("\n", "\r\n").encode())
 
     def test_renovate_preset(self):
@@ -299,7 +304,7 @@ class FanOut(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         bare = self.tmp / "remotes" / ORG / "salsa.git"
         raw = subprocess.run(["git", "show", f"{BRANCH}:.claude/hooks/guard.py"], cwd=bare,
-                             check=True, capture_output=True, env={**os.environ, **GIT_ENV}).stdout
+                             check=True, capture_output=True, env={**ENV, **GIT_ENV}).stdout
         self.assertEqual(raw, GUARD)
         self.assertEqual(self.on_branch("salsa", ".claude/settings.json").encode(), SETTINGS)
         # The repository's own guard config isn't a copy.
@@ -612,7 +617,7 @@ class FanOut(unittest.TestCase):
         bare = self.tmp / "remotes" / ORG / "aaa.git"
         self.assertIn(OLD_SHA.encode(), subprocess.run(
             ["git", "show", f"{BRANCH}:.github/workflows/latin.yml"], cwd=bare, check=True, capture_output=True,
-            env={**os.environ, **GIT_ENV}).stdout)
+            env={**ENV, **GIT_ENV}).stdout)
 
     def test_an_unexpected_error_fails_that_repository_only(self):
         self.remote("aaa", {".github/workflows/ci.yml": CI})
@@ -709,7 +714,7 @@ class FanOut(unittest.TestCase):
             with self.subTest(args=args):
                 done = subprocess.run(
                     [sys.executable, str(SCRIPT), "--source", str(self.source), "--list", str(listing), *args],
-                    env={**os.environ, **self.env}, capture_output=True, text=True)
+                    env={**ENV, **self.env}, capture_output=True, text=True)
                 self.assertEqual(done.returncode, 2, done.stderr)
         self.assertEqual(self.calls(), [])
 

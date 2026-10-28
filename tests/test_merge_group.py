@@ -44,6 +44,9 @@ REQUIRED = {
     "image.yml": {
         "build": set(),
     },
+    "python.yml": {
+        "check": set(),
+    },
 }
 
 # Steps that run on a pull request and on a merge group, and on nothing else.

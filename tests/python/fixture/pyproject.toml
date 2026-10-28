@@ -1,0 +1,32 @@
+# A small project that passes every check python.yml runs: CI's `python-fixture`
+# job calls the workflow on it, and tests/python/test_python_check.py breaks it one
+# way at a time. Its uv.lock pins the tools the checks run.
+[project]
+name = "fixture"
+version = "0.0.0"
+requires-python = ">=3.15"
+dependencies = []
+
+[dependency-groups]
+dev = ["coverage>=7.17", "mypy>=2.4", "pytest>=9.2", "ruff>=0.17"]
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src", "tests"]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["src/fixture"]

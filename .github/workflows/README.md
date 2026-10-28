@@ -331,6 +331,73 @@ checks them out of this repository at the commit the caller pinned
 of the caller's checkout; it checks their SHA-256 digests again before each step
 that runs one. A PR cannot change the checks that judge it.
 
+## python.yml
+
+The language checks every Python repository runs on a PR, in one job: `uv.lock` up
+to date with `pyproject.toml`, the project installed from it, `ruff format --check`,
+`ruff check`, mypy, and pytest under coverage, failing on a failing or skipped test
+(an expected failure, `xfail`, counts as a skip), on no tests at all, or on total
+coverage below the floor. Each check runs whatever the one before found, so one run
+shows every failure; only a failed install stops the checks after it. The
+language-neutral checks come from checks.yml, a separate required check.
+
+Job: `check`. Called from a caller job named `python`, the required check is
+`python / check`.
+
+| Input | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `coverage-floor` | number | `90` | The lowest total coverage the tests may reach, in per cent, as coverage reports it for what the project's `[tool.coverage.run]` measures. |
+| `working-directory` | string | `.` | The project's directory (the one with `pyproject.toml` and `uv.lock`), from the repository root. |
+
+It has no outputs, and nothing in it reads the pull request, so it runs the same on
+`merge_group` ([the merge queue](#the-merge-queue)).
+
+The caller grants the job what it uses, and passes no secrets:
+
+```yaml
+jobs:
+  python:
+    permissions:
+      contents: read
+    uses: those-who-run/.github/.github/workflows/python.yml@<sha> # vX.Y.Z
+    with:
+      coverage-floor: 90
+```
+
+### What the project pins
+
+- **Python**, in `.python-version`; uv installs it.
+- **The tools**, ruff, mypy, pytest and coverage, in `uv.lock`, from a dependency
+  group uv installs by default (`dev`). The install step fails, naming them, when
+  one is missing. Their settings are the project's own, in `pyproject.toml`: mypy's
+  `files` and strictness, ruff's rules, and coverage's `[tool.coverage.run] source`,
+  which says what the floor measures.
+- **uv**, as the newest release its `[tool.uv] required-version` allows, or the
+  newest of all without one.
+
+`make check` runs the same commands with the same versions:
+
+```sh
+uv lock --check
+uv sync --frozen
+uv run --no-sync ruff format --check
+uv run --no-sync ruff check
+uv run --no-sync mypy
+uv run --no-sync coverage run -m pytest   # then coverage report --fail-under=<floor>
+```
+
+### Where the checks come from
+
+The checks are [`scripts/python_check.py`](../../scripts/python_check.py). As in
+go.yml, the job checks it out of this repository at the commit the caller pinned,
+confirms it matches that commit, moves it out of the caller's checkout and checks its
+SHA-256 digest before each step that runs it. The tools are the project's own, from
+its `uv.lock`, so a PR that changes them shows in that file's diff.
+
+python.yml has no test guard yet: a deleted test, a removed test function or a lowered
+`coverage-floor` is not reported, and there is no `Tests weakened:` reason to give.
+A skipped test still fails the tests.
+
 ## release-please.yml
 
 Keeps a repository's release PR open with release-please, running as the

@@ -3,7 +3,8 @@ name: CI
 # Two jobs are required by name: `test`, this repository's own tests, and
 # `checks / checks`, the language-neutral checks every repository runs, from
 # checks.yml in this repository. Renaming either leaves `main` waiting for a check
-# that never reports. The other two, `go-fixture` and `go-check-cases`, test go.yml.
+# that never reports. The other four test the language workflows: `go-fixture` and
+# `go-check-cases` go.yml, `python-fixture` and `python-check-cases` python.yml.
 # release-please's PR is opened by the organisation's release App, so it starts this
 # through `pull_request` like any other PR.
 #
@@ -114,3 +115,30 @@ jobs:
           cache-dependency-path: tests/go/fixture/**/go.sum
       - name: go.yml's checks fail on a broken module
         run: python3 -m unittest discover -s tests/go -v
+
+  # python.yml (paddock#55) on a small project that passes it, as go-fixture does
+  # for go.yml. Not a required check here: this repository has no Python project.
+  python-fixture:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/python.yml
+    with:
+      working-directory: tests/python/fixture
+
+  # The same project broken one way at a time: each of python.yml's checks fails for
+  # its own reason (tests/python/test_python_check.py).
+  python-check-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          working-directory: tests/python/fixture
+          cache-dependency-glob: uv.lock
+      - name: python.yml's checks fail on a broken project
+        run: python3 -m unittest discover -s tests/python -v
