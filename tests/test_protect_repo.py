@@ -915,17 +915,21 @@ class ProtectRepo(unittest.TestCase):
         for name in ("example/queued", "example/plain", "example/unset"):
             self.assertIs(self.status_checks(name)["strict_required_status_checks_policy"], True)
 
-    def test_no_listed_repository_has_the_merge_queue_yet(self):
+    def test_only_the_pilot_has_the_merge_queue_yet(self):
         # Each repository turns it on by pull request once its CI caller runs on
-        # merge_group and a queue run has been seen green.
+        # merge_group and a queue run has been seen green. chassis is the pilot,
+        # whose queue gives that first green run.
+        pilot = "those-who-run/chassis"
         repositories = json.loads(LIST.read_text())["repositories"]
         for name, listed in repositories.items():
-            self.assertIsNot(listed.get("merge_queue", False), True, name)
+            self.assertIs(listed.get("merge_queue", False), name == pilot, name)
             self.state["repos"][name] = fresh_repo()
         run = self.run_script("--all", list_file=self.list_with_app)
         self.assertEqual(run.code, 0, run.err)
         for name in repositories:
-            self.assertEqual(self.queue_rules(name), [], name)
+            with self.subTest(repo=name):
+                expected = [self.QUEUE] if name == pilot else []
+                self.assertEqual([r["parameters"] for r in self.queue_rules(name)], expected)
 
     def test_a_one_off_has_no_merge_queue(self):
         self.state["repos"]["example/repo"] = fresh_repo()
