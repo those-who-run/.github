@@ -521,12 +521,13 @@ GH_BLOCK_ALL = {
     "variable": ({"list", "get"}, "it changes the repository's variables"),
     "ruleset": ({"list", "view", "check"}, "it changes the repository's rulesets"),
 }
-# Public, permanent and in the maintainer's name: the maintainer sees them first.
+# Public and permanent, or a merge: the maintainer sees them first.
 GH_ASK = {
     ("issue", "create"), ("issue", "comment"), ("issue", "edit"), ("issue", "close"),
     ("issue", "delete"), ("pr", "create"), ("pr", "comment"), ("pr", "review"),
     ("pr", "close"), ("pr", "merge"), ("pr", "ready"),
 }  # fmt: skip
+GH_ASK_WHY = {("pr", "merge"): "merging is the maintainer's decision"}
 # gh api: a write (any method but GET or HEAD) to one of these blocks.
 GH_API_PROTECTED = re.compile(
     r"""^(
@@ -547,6 +548,10 @@ GH_GRAPHQL_PROTECTED = re.compile(
     r"\b(mergePullRequest|updateRepository|deleteRepository|archiveRepository|"
     r"(create|update|delete)(Ref|RepositoryRuleset|BranchProtectionRule|Environment)|"
     r"updateRefs|createCommitOnBranch|(create|update|delete)Release)\b"
+)
+# What `gh pr merge --auto` and the merge queue do: ask, as `gh pr merge` does.
+GH_GRAPHQL_AUTO_MERGE = re.compile(
+    r"\b((enable|disable)PullRequestAutoMerge|(enqueue|dequeue)PullRequest)\b"
 )
 # What `gh issue|pr create|comment|edit|close|review` do, through the API: ask, as they do.
 GH_API_POSTS = re.compile(r"^repos/[^/]+/[^/]+/(issues|pulls)(/|$)")
@@ -602,7 +607,8 @@ def gh_rule(args: list[str], env: dict[str, str]) -> Verdict:
     if cmd == "api":
         verdicts.append(gh_api_rule(args))
     if (cmd, sub) in GH_ASK:
-        verdicts.append(ask(f"gh-{cmd}-{sub}", "it posts in public, in the maintainer's name"))
+        why = GH_ASK_WHY.get((cmd, sub), "it posts in public")
+        verdicts.append(ask(f"gh-{cmd}-{sub}", why))
     owner = CONFIG.owner.lower()
     others = sorted({r for r in repos if repo_owner(r) != owner})
     if others:
@@ -631,6 +637,9 @@ def gh_api_rule(args: list[str]) -> Verdict:
             method = (value or "").upper()
         elif name in ("-f", "--raw-field", "-F", "--field"):
             fields.append(value or "")
+            # A typed field's `@file` (or `@-`, stdin) is read by gh, not seen here.
+            if name in ("-F", "--field") and (value or "").partition("=")[2].startswith("@"):
+                has_input = True
         elif name == "--input":
             has_input = True
         elif not a.startswith("-") and a != "api" and endpoint is None:
@@ -648,18 +657,25 @@ def gh_api_rule(args: list[str]) -> Verdict:
             return block(
                 "gh-api", f"the GraphQL mutation {m.group(0)} does what a blocked command does"
             )
+        m = GH_GRAPHQL_AUTO_MERGE.search(query)
+        if m:
+            return ask(
+                "gh-auto-merge",
+                f"{m.group(0)}: turning on auto-merge or adding to the merge queue merges "
+                "without a further ask; the maintainer decides",
+            )
         m = GH_GRAPHQL_POSTS.search(query)
         if m:
-            return ask("gh-api", f"{m.group(0)} posts in public, in the maintainer's name")
+            return ask("gh-api", f"{m.group(0)} posts in public")
         if has_input:
-            return ask("gh-api", "a GraphQL request from a file the guard can't read")
+            return ask("gh-api", "a GraphQL request from a file or stdin, which the guard can't read")
         return ALLOWED
     if GH_API_PROTECTED.match(path):
         return block(
             "gh-api", f"{method} {path} changes the repository's settings, releases or refs"
         )
     if GH_API_POSTS.match(path):
-        return ask("gh-api", f"{method} {path} posts in public, in the maintainer's name")
+        return ask("gh-api", f"{method} {path} posts in public")
     return ALLOWED
 
 

@@ -49,10 +49,18 @@ policy.
   as the bot account (the identity hook enforces it) and the bot's token can't write
   to the organisation's projects; an agent with the maintainer's login could. The
   tables in `guard.py` have the full list.
-- **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes,
-  including any `gh pr merge`), re-running a workflow run, acting on a repository
-  outside the organisation, and any command it can't follow that names `git`, `gh`,
-  `kubectl`, `oc`, `helm`, `docker`, `podman` or `pre-commit`.
+- **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes),
+  any `gh pr merge` (`--auto` and `--disable-auto` included), re-running a workflow
+  run, acting on a repository outside the organisation, and any command it can't
+  follow that names `git`, `gh`, `kubectl`, `oc`, `helm`, `docker`, `podman` or
+  `pre-commit`.
+- **Asks before auto-merge and the merge queue** (rule `gh-auto-merge`): a
+  `gh api graphql` call whose query uses `enablePullRequestAutoMerge`,
+  `disablePullRequestAutoMerge`, `enqueuePullRequest` or `dequeuePullRequest`, as
+  `gh pr merge` does. Merging is the maintainer's decision, and once auto-merge is on
+  or a PR is in the queue it merges without a further ask. The guard reads a query
+  given inline (`-f query=...`, `-F query=...`); a GraphQL request it reads from a
+  file or stdin (`--input`, `-F query=@file`, `-F query=@-`) asks whatever it holds.
 - **Fails closed**: if the guard errors, or `.claude/guard.json` is missing or can't be
   read, the command is blocked. Without a readable config every Bash command is
   blocked, with the reason, until the file is fixed; the Read and Edit tools still

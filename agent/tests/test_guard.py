@@ -300,6 +300,8 @@ ASKS = [
     "gh pr close 1",
     "gh pr merge 1 --squash",
     "gh pr merge 1 --squash --auto",
+    "gh pr merge 1 --auto",
+    "gh pr merge 1 --disable-auto",
     "gh pr ready 1",
     "bash -c 'gh issue comment 1 --body hi'",
     "gh api repos/{owner}/{repo}/issues/1/comments -f body=hi",
@@ -308,6 +310,53 @@ ASKS = [
     "gh issue view 1 --repo someone/else",
     "GH_REPO=someone/else gh issue list",
     "gh run rerun 123",
+]
+
+AUTO_MERGE_MUTATIONS = [
+    "enablePullRequestAutoMerge",
+    "disablePullRequestAutoMerge",
+    "enqueuePullRequest",
+    "dequeuePullRequest",
+]
+
+# The forms of `gh api graphql` whose query the guard reads, for a mutation `{m}`.
+READABLE_QUERIES = [
+    "gh api graphql -f query='mutation { {m}(input: {}) { clientMutationId } }'",
+    'gh api graphql -f query="mutation { {m}(input: {}) { clientMutationId } }"',
+    "gh api graphql -f query='mutation{{m}(input:{pullRequestId:\"x\"}){clientMutationId}}'",
+    "gh api graphql -f query='\nmutation {\n  {m}(\n    input: {}\n  ) { clientMutationId }\n}'",
+    "gh api graphql -F query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql --raw-field query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql --field=query='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api graphql -fquery='mutation { {m}(input: {}) { clientMutationId } }'",
+    "gh api -X POST graphql -F id=x -f query='mutation($id: ID!) { {m}(input: {}) { x } }'",
+    "bash -c \"gh api graphql -f query='mutation { {m}(input: {}) { x } }'\"",
+    'echo "$(gh api graphql -f query=\'mutation { {m}(input: {}) { x } }\')"',
+]
+
+# The forms whose query gh reads from a file or stdin, which the guard can't see.
+UNREADABLE_QUERIES = [
+    "gh api graphql -F query=@mutation.graphql",
+    "gh api graphql --field query=@mutation.graphql -F id=x",
+    "gh api graphql -F query=@- <<'EOF'\nmutation { {m}(input: {}) { x } }\nEOF",
+    "gh api graphql --input request.json",
+    "gh api graphql --input - <<'EOF'\n{\"query\": \"mutation { {m}(input: {}) { x } }\"}\nEOF",
+]
+
+# Queries that read auto-merge and the merge queue, or only name them: these pass.
+AUTO_MERGE_READS = [
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ pullRequest(number: 1) { autoMergeRequest { enabledAt mergeMethod } } } }'",
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ mergeQueue { entries(first: 5) { nodes { position } } } } }'",
+    "gh api graphql -f query='query { repository(owner: \"o\", name: \"r\") "
+    "{ autoMergeAllowed } }'",
+    "gh api graphql -F owner=those-who-run -f query='query($owner: String!) { "
+    "organization(login: $owner) { login } }'",
+    "gh api graphql -f query=@mutation.graphql",
+    "gh api graphql -f query='query { x(first: 1) { enablePullRequestAutoMergeCount } }'",
+    "gh pr view 1 --json autoMergeRequest",
+    "cat <<'EOF' > notes.md\ngh api graphql -f query='mutation { enqueuePullRequest }'\nEOF",
 ]
 
 GITHUB_READS = [
@@ -515,6 +564,65 @@ class OutwardFacingActions(GuardTest):
         self.assertEqual(
             self.decision("gh issue comment 1 --body hi && gh pr merge 1 --admin"), "block"
         )
+
+
+class AutoMergeAndTheMergeQueue(GuardTest):
+    def verdict(self, command):
+        return guard.decide(command, str(self.config_path))
+
+    def test_the_mutations_ask_in_every_form_the_guard_reads(self):
+        for mutation in AUTO_MERGE_MUTATIONS:
+            for form in READABLE_QUERIES:
+                command = form.replace("{m}", mutation)
+                with self.subTest(command=command):
+                    self.assertEqual(self.decision(command), "ask")
+                    verdict = self.verdict(command)
+                    self.assertEqual(verdict.rule, "gh-auto-merge")
+                    self.assertIn(mutation, verdict.reason)
+                    self.assertIn("the maintainer decides", verdict.reason)
+
+    def test_a_query_from_a_file_or_stdin_asks(self):
+        for mutation in AUTO_MERGE_MUTATIONS:
+            for form in UNREADABLE_QUERIES:
+                command = form.replace("{m}", mutation)
+                with self.subTest(command=command):
+                    self.assertEqual(self.decision(command), "ask")
+                    self.assertIn("can't read", self.verdict(command).reason)
+
+    def test_a_block_beats_the_ask(self):
+        command = (
+            "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { x } "
+            "mergePullRequest(input: {}) { x } }'"
+        )
+        self.assertEqual(self.decision(command), "block")
+
+    def test_reading_auto_merge_and_the_queue_passes(self):
+        self.assert_decisions("allow", AUTO_MERGE_READS)
+
+    def test_gh_pr_merge_auto_asks_as_any_merge_does(self):
+        for command in ("gh pr merge 1 --auto", "gh pr merge 1 --disable-auto"):
+            with self.subTest(command=command):
+                verdict = self.verdict(command)
+                self.assertEqual((verdict.level, verdict.rule), (guard.ASK, "gh-pr-merge"))
+                self.assertEqual(verdict.reason, "merging is the maintainer's decision")
+
+
+class AskReasons(GuardTest):
+    def test_the_reasons_are_the_maintainers_decision_or_a_public_post(self):
+        reasons = {
+            "gh pr merge 1 --squash": "merging is the maintainer's decision",
+            "gh pr review 1 --approve": "it posts in public",
+            "gh issue comment 1 --body hi": "it posts in public",
+            "gh api repos/{owner}/{repo}/issues/1/comments -f body=hi": (
+                "POST repos/{owner}/{repo}/issues/1/comments posts in public"
+            ),
+            "gh api graphql -f query='mutation { addComment(input: {}) { x } }'": (
+                "addComment posts in public"
+            ),
+        }
+        for command, reason in reasons.items():
+            with self.subTest(command=command):
+                self.assertEqual(guard.decide(command, str(self.config_path)).reason, reason)
 
 
 class MaintainerOnly(GuardTest):
