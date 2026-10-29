@@ -31,10 +31,14 @@ program that runs git itself (`python3 -c 'subprocess.run(...)'`), a file it ope
 by a path it builds, or a command decoded at run time (`eval "$(echo ... | base64
 -d)"`). CI and the protected branch's ruleset are the backstop.
 
-Run it on a command to see the verdict:
+Run it with `--check` to see the verdict on a command without logging it:
 
-    echo '{"tool_name": "Bash", "tool_input": {"command": "git commit -n"}}' \\
-        | python3 .claude/hooks/guard.py
+    python3 .claude/hooks/guard.py --check 'git commit -n'
+
+`--check` with no command reads the hook input on stdin instead, as the hook does. It
+prints `allow`, or `ask` or `block` with the rule and the reason, and exits 0, 1 or 2
+to match; it runs nothing and never writes the guard log. Claude Code runs the hook
+without the flag, so a verdict read this way can't stand in for the hook's own.
 
 Plain Python 3.9+, standard library only: it runs before any `.venv` exists, and in
 repositories that have no Python toolchain at all.
@@ -1937,10 +1941,60 @@ def decide(command: str, config_path: str) -> Verdict:
     return check(command)
 
 
-def main(stdin=None, stdout=None, stderr=None, config_path: str | None = None) -> int:
+USAGE = (
+    "usage: guard.py                    run as the hook: the hook input on stdin\n"
+    "       guard.py --check [COMMAND]  print the verdict on COMMAND, or on the hook\n"
+    "                                   input on stdin, without logging it"
+)
+
+LEVELS = {ALLOW: "allow", ASK: "ask", BLOCK: "block"}
+
+
+def hook_command(data: dict) -> str | None:
+    """The command in the hook input, or None when the tool isn't Bash, read as main()
+    reads it."""
+    if data.get("tool_name") != "Bash":
+        return None
+    command = data["tool_input"]["command"]
+    if not isinstance(command, str):
+        raise TypeError(f"tool_input.command is {type(command).__name__}")
+    return command
+
+
+def check_only(args: list[str], stdin, stdout, stderr, config_path: str) -> int:
+    """`--check`: the verdict the hook would give, printed and never logged, so that
+    reading a verdict by hand doesn't sit in the log beside what agents really tried. It
+    only reports. The command isn't run, the exit code is the verdict's level, and the
+    verdict comes from the same decide() as the hook's, failing closed as it does."""
+    if len(args) > 1:
+        print(USAGE, file=stderr)
+        return 2
+    try:
+        command = args[0] if args else hook_command(json.load(stdin))
+        if command is None:
+            print("allow: the guard checks only the Bash tool", file=stdout)
+            return 0
+        verdict = decide(command, config_path)
+    except Exception as e:
+        verdict = block("error", f"the guard failed ({e!r}), so the command is blocked")
+    if verdict.level == ALLOW:
+        print("allow", file=stdout)
+    else:
+        print(f"{LEVELS[verdict.level]} ({verdict.rule}): {verdict.reason}", file=stdout)
+    return verdict.level
+
+
+def main(stdin=None, stdout=None, stderr=None, config_path: str | None = None, argv=()) -> int:
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    if argv:
+        # Only `--check` is known. Anything else is refused with exit 2, so that a hook
+        # set up with a wrong argument blocks rather than letting commands through.
+        if argv[0] != "--check":
+            print(USAGE, file=stderr)
+            return 2
+        return check_only(list(argv[1:]), stdin, stdout, stderr, config_path or CONFIG_PATH)
     command = ""
     try:
         data = json.load(stdin)
@@ -1978,4 +2032,4 @@ def main(stdin=None, stdout=None, stderr=None, config_path: str | None = None) -
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(argv=sys.argv[1:]))
