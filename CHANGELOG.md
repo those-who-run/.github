@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.15](https://github.com/those-who-run/.github/compare/v0.2.14...v0.2.15) (2026-10-29)
+
+
+### Features
+
+* **guard:** --check prints a verdict without logging it ([#62](https://github.com/those-who-run/.github/issues/62)) ([ab60011](https://github.com/those-who-run/.github/commit/ab60011c683ecdc29c5ae1e5c56f94b41698774a))
+
 ## [0.2.14](https://github.com/those-who-run/.github/compare/v0.2.13...v0.2.14) (2026-10-28)
 
 
