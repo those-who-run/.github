@@ -100,6 +100,31 @@ policy.
 Blocks and asks are logged, with tokens and passwords redacted, to
 `~/.claude/twr-guard.log`. `TWR_GUARD_LOG` moves the log; set it empty to turn it off.
 
+## Reading a verdict by hand
+
+`--check` prints the verdict the hook would give a command, and writes nothing to the
+log, so the log holds only what agents really sent:
+
+```sh
+python3 .claude/hooks/guard.py --check 'git push origin main'
+```
+
+It prints `allow`, or `ask` or `block` with the rule and the reason, such as
+`block (git-push): main takes changes only through a PR`, and exits 0 for allow, 1 for
+ask and 2 for block. Given no command, it reads the hook input on stdin, as the hook
+does (with a terminal on stdin it prints the usage instead of waiting):
+
+```sh
+echo '{"tool_name": "Bash", "tool_input": {"command": "git commit -n"}}' \
+    | python3 .claude/hooks/guard.py --check
+```
+
+It only reports: it runs nothing, and its verdict comes from the same code as the
+hook's, failing closed the same way (an error or an unreadable `guard.json` prints
+`block`). Claude Code runs the hook with no argument (`settings.json`), and the guard
+refuses any argument but `--check` with exit 2, so a hook set up with a wrong argument
+blocks every command rather than letting one through.
+
 ## Taking the guard into a repository
 
 1. Copy the files:
@@ -135,11 +160,16 @@ Blocks and asks are logged, with tokens and passwords redacted, to
 4. Check that it runs (needs `python3` 3.9 or later, nothing else):
 
    ```sh
-   echo '{"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}' \
-       | python3 .claude/hooks/guard.py; echo "exit $?"
+   python3 .claude/hooks/guard.py --check 'git push origin main'; echo "exit $?"
    ```
 
-   It prints the reason and `exit 2`.
+   It prints the block, its rule and reason, and `exit 2`, and leaves the log alone.
+   The same with the hook input on stdin, as Claude Code sends it:
+
+   ```sh
+   echo '{"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}' \
+       | python3 .claude/hooks/guard.py --check; echo "exit $?"
+   ```
 
 A repository that needs a rule the guard doesn't have raises it here, so that the
 canonical copy carries it, rather than changing its own copy.

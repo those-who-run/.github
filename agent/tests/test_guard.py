@@ -1210,6 +1210,160 @@ class Log(GuardTest):
         self.assertEqual(len(command), 200)
 
 
+class CheckOnly(GuardTest):
+    """`--check` prints the verdict and never writes the log (those-who-run/paddock#282)."""
+
+    def check(self, *args, stdin=""):
+        """The guard's (exit code, stdout, stderr) for `guard.py --check <args>`."""
+        out, err = io.StringIO(), io.StringIO()
+        code = guard.main(
+            io.StringIO(stdin), out, err, config_path=str(self.config_path), argv=["--check", *args]
+        )
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_verdict_read_by_hand_is_not_logged(self):
+        self.log_path.write_text("an earlier line\n")
+        cases = [
+            ("gh pr merge 1 --admin", 2, "block (gh-admin-merge): "),
+            ("gh issue comment 1 --body hi", 1, "ask (gh-issue-comment): "),
+            ("gh issue view 1", 0, "allow\n"),
+        ]
+        for command, code, verdict in cases:
+            for args, stdin in [((command,), ""), ((), json.dumps(hook_input(command)))]:
+                with self.subTest(command=command, stdin=bool(stdin)):
+                    got, out, err = self.check(*args, stdin=stdin)
+                    self.assertEqual((got, err), (code, ""))
+                    self.assertTrue(out.startswith(verdict), out)
+        self.assertEqual(self.log_path.read_text(), "an earlier line\n")
+
+    def test_the_hook_still_logs_each_block_and_ask(self):
+        self.check("gh pr merge 1 --admin")
+        self.assertFalse(self.log_path.exists())
+        self.decision("gh pr merge 1 --admin")
+        self.decision("gh issue comment 1 --body hi")
+        self.decision("gh issue view 1")
+        lines = self.log_path.read_text().splitlines()
+        self.assertEqual(
+            [line.split("\t")[1:3] for line in lines],
+            [["block", "gh-admin-merge"], ["ask", "gh-issue-comment"]],
+        )
+
+    def test_the_verdict_is_the_hooks(self):
+        """The same verdict and rule as the hook gives, for every command the other tests
+        name, so a verdict read with --check can be trusted to be the hook's."""
+        for command in SENSITIVE_COMMANDS:
+            with self.subTest(command=command):
+                code, out, _ = self.check(command)
+                self.assertEqual(["allow", "ask", "block"][code], self.decision(command))
+                if code:
+                    rule = re.match(r"\w+ \(([\w-]+)\): ", out)
+                    self.assertIsNotNone(rule, out)
+                    self.assertIn(f"({rule[1]})", self.reason(command))
+
+    def test_it_fails_closed_without_logging(self):
+        for stdin in ["not json", json.dumps({"tool_name": "Bash"})]:
+            with self.subTest(stdin=stdin):
+                code, out, _ = self.check(stdin=stdin)
+                self.assertEqual(code, 2)
+                self.assertTrue(out.startswith("block (error): the guard failed"), out)
+        self.config_path.unlink()
+        code, out, _ = self.check("ls")
+        self.assertEqual(code, 2)
+        self.assertTrue(out.startswith("block (config): "), out)
+        self.assertFalse(self.log_path.exists())
+
+    def test_a_command_that_is_not_utf8_still_blocks(self):
+        """A reason that quotes bytes stdout can't encode is printed escaped, so the
+        verdict is still a block with exit 2, as the hook gives, not a crash."""
+        command = "gh api repos/a/b\udcff -X DELETE"
+        for args, stdin in [((command,), ""), ((), json.dumps(hook_input(command)))]:
+            with self.subTest(stdin=bool(stdin)):
+                raw = io.BytesIO()
+                out = io.TextIOWrapper(raw, encoding="utf-8")  # strict, as a real stdout
+                code = guard.main(
+                    io.StringIO(stdin), out, io.StringIO(),
+                    config_path=str(self.config_path), argv=["--check", *args],
+                )  # fmt: skip
+                out.flush()
+                self.assertEqual(code, 2)
+                self.assertTrue(raw.getvalue().startswith(b"block (gh-api): "), raw.getvalue())
+                self.assertIn(b"\\udcff", raw.getvalue())
+        self.assertEqual(self.decision(command), "block")
+
+    def test_the_script_blocks_a_command_that_is_not_utf8(self):
+        """The real process, with a byte that isn't UTF-8 in its argument."""
+        hooks = self.tmp / "repo" / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        shutil.copy(GUARD, hooks / "guard.py")
+        shutil.copy(EXAMPLE, hooks.parent / "guard.json")
+        r = subprocess.run(
+            [sys.executable, str(hooks / "guard.py"), "--check", b"gh api repos/a/b\xff -X DELETE"],
+            capture_output=True,
+            check=False,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "LC_ALL": "C.UTF-8"},
+        )
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertTrue(r.stdout.startswith(b"block (gh-api): "), r.stdout)
+        self.assertFalse(self.log_path.exists())
+
+    def test_a_terminal_on_stdin_gets_the_usage(self):
+        """`--check` with no command and a terminal on stdin says how to use it, rather
+        than waiting for hook input nobody is going to type."""
+
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+
+        out, err = io.StringIO(), io.StringIO()
+        code = guard.main(
+            Terminal(), out, err, config_path=str(self.config_path), argv=["--check"]
+        )
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("usage: guard.py", err.getvalue())
+        self.assertFalse(self.log_path.exists())
+
+    def test_another_tool_is_allowed(self):
+        code, out, _ = self.check(stdin=json.dumps(hook_input("ignored", tool="Read")))
+        self.assertEqual((code, out), (0, "allow: the guard checks only the Bash tool\n"))
+
+    def test_a_wrong_argument_blocks(self):
+        """Only `--check` is known, and it takes one command. Anything else exits 2, as a
+        block does, so a hook set up with a wrong argument lets nothing through."""
+        for argv in [
+            ["--chek", "ls"],
+            ["-c"],
+            ["ls"],
+            ["--check", "git", "status"],
+            ["--check", "--help"],
+            ["--check", "-"],
+        ]:
+            with self.subTest(argv=argv):
+                stdin = io.StringIO(json.dumps(hook_input("ls")))
+                out, err = io.StringIO(), io.StringIO()
+                code = guard.main(stdin, out, err, config_path=str(self.config_path), argv=argv)
+                self.assertEqual((code, out.getvalue()), (2, ""))
+                self.assertIn("usage: guard.py", err.getvalue())
+        self.assertFalse(self.log_path.exists())
+
+    def test_the_script_checks_as_the_docs_show(self):
+        """The real process, as the docstring and README.md run it."""
+        hooks = self.tmp / "repo" / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        shutil.copy(GUARD, hooks / "guard.py")
+        shutil.copy(EXAMPLE, hooks.parent / "guard.json")
+        r = subprocess.run(
+            [sys.executable, str(hooks / "guard.py"), "--check", "git commit -n"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(r.stdout.startswith("block (git-no-verify): "), r.stdout)
+        self.assertFalse(self.log_path.exists())
+        self.assertIn("guard.py --check 'git commit -n'", guard.__doc__)
+        self.assertIn("guard.py --check 'git push origin main'", README.read_text())
+
+
 class Secrets(GuardTest):
     def test_reading_a_secret_in_bash_is_blocked(self):
         self.assert_pairs(SECRET_READS)
