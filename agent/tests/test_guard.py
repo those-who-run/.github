@@ -1272,6 +1272,40 @@ class CheckOnly(GuardTest):
         self.assertTrue(out.startswith("block (config): "), out)
         self.assertFalse(self.log_path.exists())
 
+    def test_a_command_that_is_not_utf8_still_blocks(self):
+        """A reason that quotes bytes stdout can't encode is printed escaped, so the
+        verdict is still a block with exit 2, as the hook gives, not a crash."""
+        command = "gh api repos/a/b\udcff -X DELETE"
+        for args, stdin in [((command,), ""), ((), json.dumps(hook_input(command)))]:
+            with self.subTest(stdin=bool(stdin)):
+                raw = io.BytesIO()
+                out = io.TextIOWrapper(raw, encoding="utf-8")  # strict, as a real stdout
+                code = guard.main(
+                    io.StringIO(stdin), out, io.StringIO(),
+                    config_path=str(self.config_path), argv=["--check", *args],
+                )  # fmt: skip
+                out.flush()
+                self.assertEqual(code, 2)
+                self.assertTrue(raw.getvalue().startswith(b"block (gh-api): "), raw.getvalue())
+                self.assertIn(b"\\udcff", raw.getvalue())
+        self.assertEqual(self.decision(command), "block")
+
+    def test_the_script_blocks_a_command_that_is_not_utf8(self):
+        """The real process, with a byte that isn't UTF-8 in its argument."""
+        hooks = self.tmp / "repo" / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        shutil.copy(GUARD, hooks / "guard.py")
+        shutil.copy(EXAMPLE, hooks.parent / "guard.json")
+        r = subprocess.run(
+            [sys.executable, str(hooks / "guard.py"), "--check", b"gh api repos/a/b\xff -X DELETE"],
+            capture_output=True,
+            check=False,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "LC_ALL": "C.UTF-8"},
+        )
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertTrue(r.stdout.startswith(b"block (gh-api): "), r.stdout)
+        self.assertFalse(self.log_path.exists())
+
     def test_another_tool_is_allowed(self):
         code, out, _ = self.check(stdin=json.dumps(hook_input("ignored", tool="Read")))
         self.assertEqual((code, out), (0, "allow: the guard checks only the Bash tool\n"))

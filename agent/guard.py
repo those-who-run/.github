@@ -1975,13 +1975,23 @@ def check_only(args: list[str], stdin, stdout, stderr, config_path: str) -> int:
             print("allow: the guard checks only the Bash tool", file=stdout)
             return 0
         verdict = decide(command, config_path)
+        print(verdict_line(verdict, stdout), file=stdout)
     except Exception as e:
         verdict = block("error", f"the guard failed ({e!r}), so the command is blocked")
-    if verdict.level == ALLOW:
-        print("allow", file=stdout)
-    else:
-        print(f"{LEVELS[verdict.level]} ({verdict.rule}): {verdict.reason}", file=stdout)
+        print(verdict_line(verdict, stdout), file=stdout)
     return verdict.level
+
+
+def verdict_line(verdict: Verdict, stdout) -> str:
+    """The line --check prints. A reason can quote the command, and a command can hold
+    bytes that aren't UTF-8 (`$'\\xff'`, a surrogate on stdin), which stdout refuses to
+    encode; they are escaped instead, as stderr does for the hook, so the verdict is
+    still printed and its exit code still given."""
+    if verdict.level == ALLOW:
+        return "allow"
+    line = f"{LEVELS[verdict.level]} ({verdict.rule}): {verdict.reason}"
+    encoding = getattr(stdout, "encoding", None) or "utf-8"
+    return line.encode(encoding, "backslashreplace").decode(encoding)
 
 
 def main(stdin=None, stdout=None, stderr=None, config_path: str | None = None, argv=()) -> int:
