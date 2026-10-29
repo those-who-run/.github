@@ -119,7 +119,9 @@ jobs:
       # copier pulls in through prompt_toolkit for chassis's template check, and
       # go-digest (CC-BY-SA-4.0 on its docs, beside Apache-2.0) and image-spec
       # (Apache-2.0 and MIT, with the DCO's contributor sign-off text), which buf
-      # brings into contracts' tools; the action can only exempt a package from the
+      # brings into contracts' tools, and protobuf (BSD-3-Clause with Google's
+      # LicenseRef-scancode-protobuf notice), which onnxruntime brings into radio
+      # through piper-tts; the action can only exempt a package from the
       # licence check by its exact name, so those are listed one by one and the
       # notices stay off the global list.
       # The vulnerability check still covers them.
@@ -147,6 +149,7 @@ jobs:
             pkg:golang/golang.org/x/telemetry, pkg:golang/golang.org/x/term,
             pkg:golang/golang.org/x/text, pkg:golang/golang.org/x/tools,
             pkg:golang/golang.org/x/vuln, pkg:golang/golang.org/x/xerrors,
+            pkg:pypi/protobuf,
             pkg:pypi/wcwidth
           show-openssf-scorecard: true
           comment-summary-in-pr: never

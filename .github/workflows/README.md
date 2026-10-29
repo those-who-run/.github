@@ -224,7 +224,9 @@ packages, OFL-1.1 in `github.com/alecthomas/chroma`, Go's PATENTS grant in
 which copier needs for chassis's template check, and `github.com/opencontainers/go-digest`
 (CC-BY-SA-4.0 on its documentation) and `github.com/opencontainers/image-spec`
 (Apache-2.0 and MIT, with the DCO's contributor sign-off text), which buf needs in
-contracts' tools.
+contracts' tools, and the Python package `protobuf` (BSD-3-Clause, with Google's
+`LicenseRef-scancode-protobuf` notice), which onnxruntime brings into radio through
+`piper-tts`.
 dependency-review-action can only exempt a package from the licence
 check, by its exact name, so those packages are listed one by one in the workflow and
 the notices stay off the global list. They still get the vulnerability check.
