@@ -112,7 +112,7 @@ python3 .claude/hooks/guard.py --check 'git push origin main'
 It prints `allow`, or `ask` or `block` with the rule and the reason, such as
 `block (git-push): main takes changes only through a PR`, and exits 0 for allow, 1 for
 ask and 2 for block. Given no command, it reads the hook input on stdin, as the hook
-does:
+does (with a terminal on stdin it prints the usage instead of waiting):
 
 ```sh
 echo '{"tool_name": "Bash", "tool_input": {"command": "git commit -n"}}' \
@@ -164,6 +164,12 @@ blocks every command rather than letting one through.
    ```
 
    It prints the block, its rule and reason, and `exit 2`, and leaves the log alone.
+   The same with the hook input on stdin, as Claude Code sends it:
+
+   ```sh
+   echo '{"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}' \
+       | python3 .claude/hooks/guard.py --check; echo "exit $?"
+   ```
 
 A repository that needs a rule the guard doesn't have raises it here, so that the
 canonical copy carries it, rather than changing its own copy.

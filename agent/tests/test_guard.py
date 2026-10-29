@@ -1306,6 +1306,22 @@ class CheckOnly(GuardTest):
         self.assertTrue(r.stdout.startswith(b"block (gh-api): "), r.stdout)
         self.assertFalse(self.log_path.exists())
 
+    def test_a_terminal_on_stdin_gets_the_usage(self):
+        """`--check` with no command and a terminal on stdin says how to use it, rather
+        than waiting for hook input nobody is going to type."""
+
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+
+        out, err = io.StringIO(), io.StringIO()
+        code = guard.main(
+            Terminal(), out, err, config_path=str(self.config_path), argv=["--check"]
+        )
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("usage: guard.py", err.getvalue())
+        self.assertFalse(self.log_path.exists())
+
     def test_another_tool_is_allowed(self):
         code, out, _ = self.check(stdin=json.dumps(hook_input("ignored", tool="Read")))
         self.assertEqual((code, out), (0, "allow: the guard checks only the Bash tool\n"))
@@ -1313,7 +1329,14 @@ class CheckOnly(GuardTest):
     def test_a_wrong_argument_blocks(self):
         """Only `--check` is known, and it takes one command. Anything else exits 2, as a
         block does, so a hook set up with a wrong argument lets nothing through."""
-        for argv in [["--chek", "ls"], ["-c"], ["ls"], ["--check", "git", "status"]]:
+        for argv in [
+            ["--chek", "ls"],
+            ["-c"],
+            ["ls"],
+            ["--check", "git", "status"],
+            ["--check", "--help"],
+            ["--check", "-"],
+        ]:
             with self.subTest(argv=argv):
                 stdin = io.StringIO(json.dumps(hook_input("ls")))
                 out, err = io.StringIO(), io.StringIO()

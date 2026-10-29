@@ -1966,7 +1966,9 @@ def check_only(args: list[str], stdin, stdout, stderr, config_path: str) -> int:
     reading a verdict by hand doesn't sit in the log beside what agents really tried. It
     only reports. The command isn't run, the exit code is the verdict's level, and the
     verdict comes from the same decide() as the hook's, failing closed as it does."""
-    if len(args) > 1:
+    # A flag where the command goes (`--check --help`) is a mistake, not a command, and
+    # a terminal on stdin would leave it waiting with nothing on the screen.
+    if len(args) > 1 or (args and args[0].startswith("-")) or (not args and stdin.isatty()):
         print(USAGE, file=stderr)
         return 2
     try:
