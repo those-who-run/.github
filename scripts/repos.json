@@ -98,7 +98,7 @@
       "merge_queue": true
     },
     "those-who-run/radio": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "python / check", "image / build"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
