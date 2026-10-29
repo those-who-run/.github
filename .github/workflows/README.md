@@ -280,6 +280,10 @@ jobs:
 - An edit made while CI's own run on the head is still going can finish first, and
   CI's run, with the old title, then reports after it. Edit the title again once CI
   has finished.
+- Each run is a check suite of its own, so the head keeps every `checks / checks`
+  run: CI's and each edit's. The commit's combined status stays failed while any of
+  them failed; the ruleset is meant to read the latest. Check that in one repository's
+  merge box before every caller takes `pr-title.yml` (those-who-run/paddock#285, AC1).
 
 This repository's own `pr-title.yml` calls `./.github/workflows/checks.yml` as its
 `ci.yml` does, and `tests/test_ci_workflow.py` keeps the two jobs equal.
