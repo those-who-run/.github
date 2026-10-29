@@ -1,0 +1,39 @@
+name: PR title
+
+# Editing a PR runs `checks / checks` again on its head, so a title fixed after the
+# check failed on it turns the check green without a new push (those-who-run/paddock#285).
+# CI (ci.yml) triggers on `pull_request`'s default types, which leave out `edited`,
+# and a re-run of its job reads the event as it was, with the old title.
+#
+# A workflow of its own rather than `edited` in ci.yml: there, a title edit would run
+# `test` again, and the concurrency group would cancel CI's run in progress on the
+# head. Skipping `test` on an edit instead would report it as skipped, which a
+# ruleset counts as passed. Here only `checks` runs, under a concurrency group of its
+# own (the workflow's name is in it), so CI's runs and their results are untouched.
+#
+# The job is ci.yml's `checks` job, the same reusable workflow with the same inputs
+# (tests/test_ci_workflow.py keeps the two equal), so it reports under the same name
+# with the whole check: the title, the commit hooks, gitleaks and dependency review.
+# A job that checked only the title would turn a failed `checks / checks` green
+# without the rest. The job has no `if:` on which field changed
+# (`github.event.changes.title`): a skipped job could report as passed in place of a
+# failure. So an edit to the description or the base runs it too; it costs one
+# checks run, never the tests.
+on:
+  pull_request:
+    types: [edited]
+
+# Nothing by default; the job asks for what it uses.
+permissions: {}
+
+# A newer edit supersedes a run in progress. The group is this workflow's, never CI's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The same job as ci.yml's `checks`, which the ruleset requires as `checks / checks`.
+  checks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml

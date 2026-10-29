@@ -232,8 +232,57 @@ the notices stay off the global list. They still get the vulnerability check.
 The title check and dependency review run on `pull_request` events only; on
 `merge_group` they are skipped and the job still reports `checks / checks`. gitleaks
 runs on both, over the PR's commits or the merge group's squash commit
-([the merge queue](#the-merge-queue)). A PR title or
-description edited after the run is checked when the job re-runs.
+([the merge queue](#the-merge-queue)). A re-run of the job reads the event as it
+was when the run started, so it checks the old title.
+
+### Fixing a title
+
+Editing a PR's title runs `checks / checks` again on its head, so a title fixed after
+the check failed on it turns the check green with no new push
+(those-who-run/paddock#285). The caller's CI triggers on `pull_request`'s default
+types, which leave out `edited`, so the edit runs a second, small caller,
+`.github/workflows/pr-title.yml`, beside it:
+
+```yaml
+name: PR title
+
+on:
+  pull_request:
+    types: [edited]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: those-who-run/.github/.github/workflows/checks.yml@<sha> # vX.Y.Z
+```
+
+- Its `checks` job is the same as the one in the caller's `ci.yml`: the same pin, the
+  same `with:` inputs and permissions. It reports as `checks / checks` with the whole
+  check, so the latest result on the head is still the commit hooks', gitleaks's and
+  dependency review's as well as the title's. The fan-out moves both pins together.
+- Nothing else runs on an edit: `test`, `go / check` and `image / build` keep their
+  results on the head. Adding `edited` to `ci.yml` instead would run them again, and
+  `ci.yml`'s concurrency group would cancel a run in progress on the head; skipping
+  them on an edit would report them as skipped, which a ruleset counts as passed.
+- Its concurrency group has the workflow's own name in it, so it never cancels a CI
+  run. A newer edit cancels an older edit's run.
+- The job has no `if:` on which field changed: an edit to the description or the base
+  runs the checks again too, one checks run and never the tests.
+- It triggers on `pull_request`, never `pull_request_target`, so a fork's PR runs it
+  with a read-only token and no secrets, as CI.
+- An edit made while CI's own run on the head is still going can finish first, and
+  CI's run, with the old title, then reports after it. Edit the title again once CI
+  has finished.
+
+This repository's own `pr-title.yml` calls `./.github/workflows/checks.yml` as its
+`ci.yml` does, and `tests/test_ci_workflow.py` keeps the two jobs equal.
 
 ## go.yml
 

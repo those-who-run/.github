@@ -14,6 +14,10 @@ name: Checks
 #         contents: read
 #       uses: those-who-run/.github/.github/workflows/checks.yml@<sha> # vX.Y.Z
 #
+# and the same job again from a caller that triggers on `pull_request` `edited`
+# (pr-title.yml), so that fixing a PR's title runs the title check again without
+# running the caller's other jobs (README.md, "Fixing a title").
+#
 # Job name: `checks`. Rulesets require it by name as `<caller job> / checks`, so the
 # caller above reports `checks / checks`. The name stays: renaming it leaves every
 # caller's `main` waiting for a check that never reports. The job has no `if:`, and
