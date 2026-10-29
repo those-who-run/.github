@@ -104,7 +104,7 @@
       "code_owners": true,
       "actions_prs": false,
       "issues": false,
-      "publishes": false,
+      "publishes": true,
       "tags": ["v*"],
       "codeql": [],
       "merge_queue": true
