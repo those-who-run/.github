@@ -110,7 +110,7 @@
       "merge_queue": true
     },
     "those-who-run/pitwall": {
-      "checks": ["test", "checks / checks"],
+      "checks": ["test", "checks / checks", "go / check", "image / build", "web"],
       "actions": true,
       "approvals": 1,
       "code_owners": true,
