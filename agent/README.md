@@ -159,7 +159,12 @@ blocks every command rather than letting one through.
    !.claude/settings.json
    !.claude/guard.json
    !.claude/hooks/
+   !.claude/skills/
+   !.claude/agents/
    ```
+
+   The last two are for the skills and the agents' briefs. git can't track a file
+   whose directory is ignored, so each directory of copies needs its own line.
 
 4. Check that it runs (needs `python3` 3.9 or later, nothing else):
 
@@ -229,6 +234,11 @@ agent's brief; renaming or removing one changes or removes its line.
 from the manifest, while the manifest names a file that isn't there or anything
 else in this directory, and when a destination leaves `.claude/`.
 
+A copy is compared byte for byte, and every repository's commit hooks trim
+trailing whitespace and fix the end of a file. So a listed file has no carriage
+return, no whitespace at the end of a line and exactly one final newline, or the
+hooks would change its copy in each repository; the same test checks that.
+
 ## The skills and the reviewer
 
 The skills are the procedures an agent follows on a change, written once here so a
@@ -255,9 +265,9 @@ can't rewrite the reviewer that judges it.
 
 These files are rules, like `AGENTS.md`: nothing in them enforces anything. They
 never repeat or weaken a rule from paddock's `AGENTS.md`, which wins where the two
-differ. They reach the other repositories as the copies
-[the manifest](#the-manifest) lists; a repository that doesn't hold them yet reads
-them from here.
+differ. The release fan-out is what copies them into the other repositories, once
+it reads [the manifest](#the-manifest) (`scripts/fan_out.py` says what it copies);
+until a repository holds them, they are read from here.
 
 ### Lanes
 

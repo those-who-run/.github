@@ -69,7 +69,9 @@ class Manifest(unittest.TestCase):
         for source in copies():
             with self.subTest(source=source):
                 self.assertTrue(source.startswith("agent/"))
-                self.assertNotIn("..", source.split("/"))
+                self.assertNotIn("\\", source)
+                for part in source.split("/"):
+                    self.assertNotIn(part, ("", ".", ".."))
                 path = ROOT / source
                 self.assertFalse(path.is_symlink(), "a symbolic link has no bytes of its own to copy")
                 self.assertTrue(path.is_file())
@@ -99,6 +101,19 @@ class Manifest(unittest.TestCase):
                 self.assertNotIn("\\", destination)
                 for part in destination.split("/"):
                     self.assertNotIn(part, ("", ".", ".."))
+
+    def test_a_copy_survives_every_repositorys_commit_hooks(self):
+        # A copy is compared byte for byte with its source, and each repository's
+        # hooks (trailing-whitespace, end-of-file-fixer) rewrite a file that has a
+        # space at the end of a line, no final newline or more than one. A source
+        # they would change could never match its copies.
+        for source in copies():
+            with self.subTest(source=source):
+                raw = (ROOT / source).read_bytes()
+                self.assertNotIn(b"\r", raw)
+                self.assertTrue(raw.endswith(b"\n") and not raw.endswith(b"\n\n"), "exactly one final newline")
+                trailing = [n for n, line in enumerate(raw.split(b"\n"), 1) if line != line.rstrip(b" \t")]
+                self.assertEqual(trailing, [], "lines that end in whitespace")
 
     def test_nothing_else_from_agent_is_listed(self):
         # lanes.json, lanes.py, guard.example.json, the README and the tests stay
