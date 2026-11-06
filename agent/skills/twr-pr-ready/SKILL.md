@@ -76,5 +76,6 @@ Rules for the table:
 
 ## Then
 
-Open it with `gh pr create`, ready for review. Do not approve, merge, queue or
-enable auto-merge.
+Open it with `gh pr create`, ready for review. Do not approve it, queue it or
+enable auto-merge. Merge only when the maintainer asks, only on green, and never
+with `--admin` or any other bypass.

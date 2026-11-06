@@ -49,10 +49,11 @@ policy.
   script itself. `make -n` still runs a recipe line that starts with `+` or uses
   `$(MAKE)`, and every `$(shell ...)` the Makefile expands; the maintainer targets
   use none of these today, so their dry run runs nothing. `gh project item-edit`,
-  the write `make board` makes, isn't blocked. That is safe only because agents run
-  as the bot account (the identity hook enforces it) and the bot's token can't write
-  to the organisation's projects; an agent with the maintainer's login could. The
-  tables in `guard.py` have the full list.
+  the write `make board` makes, isn't blocked. That is safe only while the session's
+  token can't write to the organisation's projects, as the bot account's can't; a
+  session under the maintainer's login, which is how agent sessions on his machine
+  run today, could make that write. Nothing enforces it: a known gap. The tables
+  in `guard.py` have the full list.
 - **Asks** the maintainer first: posting in public (`gh issue` and `gh pr` writes),
   any `gh pr merge` (`--auto` and `--disable-auto` included), re-running a workflow
   run, acting on a repository outside the organisation, and any command it can't

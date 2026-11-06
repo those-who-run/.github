@@ -81,8 +81,10 @@ Use `twr-pr-ready`. Open it ready for review, not as a draft.
 
 ## 10. Stop
 
-Never approve, merge, queue or enable auto-merge on a pull request, and never push
-a tag or run a release. When a review arrives, use `twr-fix-review`.
+Never approve a pull request, never queue one or enable auto-merge, and never push
+a tag or run a release. Merge only when the maintainer asks, only on green, and
+never with `--admin` or any other bypass. When a review arrives, use
+`twr-fix-review`.
 
 ## Decisions on the way
 
