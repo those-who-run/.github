@@ -11,8 +11,9 @@ between repositories lives in its own `.claude/guard.json`.
 | `guard.example.json` | `.claude/guard.json` | The repository's values. Copy it and change what differs. |
 | `skills/<name>/SKILL.md` | `.claude/skills/<name>/SKILL.md` | The skills: how an agent builds, proves, cleans, opens and answers a review on a change. See [The skills and the reviewer](#the-skills-and-the-reviewer). |
 | `agents/twr-reviewer.md` | `.claude/agents/twr-reviewer.md` | The reviewer's brief. |
+| `copies.json` | stays here | The manifest: every file above that a repository copies, and where its copy lives. See [The manifest](#the-manifest). |
 | `lanes.json`, `lanes.py` | stay here | How closely a pull request is read, from the paths it changes, and the reference classifier. |
-| `tests/` | stays here | The tests of the guard, the lanes and the skills' front matter. |
+| `tests/` | stays here | The tests of the guard, the lanes, the skills' front matter and the manifest. |
 
 The guard started in v1 as those-who-run/those-who-run#352. Its docstring says what it
 blocks, what it asks about and what it can't see; the tables in `guard.py` are the
@@ -191,6 +192,43 @@ curl -fsSL "$base/settings.json" | diff - .claude/settings.json
 No output means the copy is current. With a checkout of this repository beside it,
 `sha256sum ../.github/agent/guard.py .claude/hooks/guard.py` gives two equal sums.
 
+## The manifest
+
+`copies.json` lists every file here that a repository holds a copy of, and where
+the copy lives in that repository:
+
+```json
+{
+  "agent/guard.py": ".claude/hooks/guard.py",
+  "agent/skills/twr-dev/SKILL.md": ".claude/skills/twr-dev/SKILL.md"
+}
+```
+
+It is one JSON object with its keys sorted: a path in this repository, then the
+path of its copy, always under `.claude/`. It lists the guard's two files
+(`guard.py` and `settings.json`) and every file under `skills/` and `agents/`, each
+of which keeps its path (`agent/skills/<name>/SKILL.md` goes to
+`.claude/skills/<name>/SKILL.md`). `guard.example.json`, `lanes.json`, `lanes.py`,
+this README and `tests/` are not copied, so they are not in it.
+
+The manifest is there so that whatever copies these files, or checks a
+repository's copies, reads one list and no tool keeps its own:
+
+- It is read at the release of this repository that the other repository pins,
+  never from `main`, so the list and the files it names are of the same commit.
+- A release made before the manifest has none. For those the copies are the
+  guard's two files, as they always were, and a reader handles both.
+- A file in a repository at `.claude/skills/twr-*/` or `.claude/agents/twr-*.md`
+  that is no destination in the manifest is a stale copy, left behind by a skill
+  that was renamed or removed. The `twr-` prefix is what tells a copy from a
+  skill of the repository's own, which is never touched.
+
+**Adding a skill, or a file to one, means adding its line.** So does adding an
+agent's brief; renaming or removing one changes or removes its line.
+`tests/test_copies.py` fails while a file under `skills/` or `agents/` is missing
+from the manifest, while the manifest names a file that isn't there or anything
+else in this directory, and when a destination leaves `.claude/`.
+
 ## The skills and the reviewer
 
 The skills are the procedures an agent follows on a change, written once here so a
@@ -217,8 +255,9 @@ can't rewrite the reviewer that judges it.
 
 These files are rules, like `AGENTS.md`: nothing in them enforces anything. They
 never repeat or weaken a rule from paddock's `AGENTS.md`, which wins where the two
-differ. The release fan-out does not copy them into the other repositories yet;
-until it does, they are read from here.
+differ. They reach the other repositories as the copies
+[the manifest](#the-manifest) lists; a repository that doesn't hold them yet reads
+them from here.
 
 ### Lanes
 

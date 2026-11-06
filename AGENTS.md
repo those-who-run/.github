@@ -31,8 +31,14 @@ every repository at once.
   description that says when to use it; the reviewer's brief is
   `agent/agents/twr-reviewer.md`. A pattern added to `agent/lanes.json` has an
   example that lands in the lane and a near miss in `agent/tests/test_lanes.py`.
-- Docs change in the same PR: `agent/README.md` for the guard, the skills and the
-  lanes, this file for the rules below.
+- `agent/copies.json` is the manifest of what every repository copies from
+  `agent/` and where: the guard's two files and every file under `agent/skills/`
+  and `agent/agents/`, each to a path under `.claude/`. Whatever copies or checks
+  those files reads it, at the release a repository pins. Adding a skill, or a
+  file to one, means adding its line: `agent/tests/test_copies.py` fails
+  otherwise.
+- Docs change in the same PR: `agent/README.md` for the guard, the skills, the
+  manifest and the lanes, this file for the rules below.
 
 ## Brand assets
 
