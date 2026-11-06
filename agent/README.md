@@ -9,7 +9,10 @@ between repositories lives in its own `.claude/guard.json`.
 | `guard.py` | `.claude/hooks/guard.py` | The `PreToolUse` hook that checks every Bash command an agent sends. |
 | `settings.json` | `.claude/settings.json` | The project settings: secrets denied to the Read and Edit tools, an ask before editing the settings, the guard or its config, bypass mode off, and the hook that runs the guard. |
 | `guard.example.json` | `.claude/guard.json` | The repository's values. Copy it and change what differs. |
-| `tests/` | stays here | The guard's tests. |
+| `skills/<name>/SKILL.md` | `.claude/skills/<name>/SKILL.md` | The skills: how an agent builds, proves, cleans, opens and answers a review on a change. See [The skills and the reviewer](#the-skills-and-the-reviewer). |
+| `agents/twr-reviewer.md` | `.claude/agents/twr-reviewer.md` | The reviewer's brief. |
+| `lanes.json`, `lanes.py` | stay here | How closely a pull request is read, from the paths it changes, and the reference classifier. |
+| `tests/` | stays here | The tests of the guard, the lanes and the skills' front matter. |
 
 The guard started in v1 as those-who-run/those-who-run#352. Its docstring says what it
 blocks, what it asks about and what it can't see; the tables in `guard.py` are the
@@ -187,6 +190,60 @@ curl -fsSL "$base/settings.json" | diff - .claude/settings.json
 
 No output means the copy is current. With a checkout of this repository beside it,
 `sha256sum ../.github/agent/guard.py .claude/hooks/guard.py` gives two equal sums.
+
+## The skills and the reviewer
+
+The skills are the procedures an agent follows on a change, written once here so a
+session on a laptop and an unattended job read the same text. Each is a folder
+under `skills/` holding a `SKILL.md`, in the format Claude Code loads from
+`.claude/skills/`.
+
+| Skill | When | What it does |
+| --- | --- | --- |
+| `twr-dev` | At the start of any change | The loop for one issue and one pull request: read the spec, plan the proof, build, test, check, clean, open. It chains the four below. |
+| `twr-proof` | Before the code, and for the evidence table | Picks the kind of evidence each acceptance criterion needs (`unit`, `recording`, `parity`, `e2e`, `live`, `car`) and how to report it. An agent never claims `live` or `car`. |
+| `twr-test-audit` | Whenever a test is added, edited or removed | Four questions before a test is added, and a regression test shown failing on the old code. |
+| `twr-deslop` | After the checks pass, before the pull request | A clean-up of the diff that changes no behaviour. |
+| `twr-pr-ready` | Just before opening the pull request | The readiness checklist and the body, with one row of evidence per criterion. |
+| `twr-fix-review` | When a review arrives | Verify each item, then fix it or contest it with a reason. Two rounds at most. |
+
+`agents/twr-reviewer.md` is the brief of `twr-reviewer`, the independent reviewer:
+a second read for the maintainer, never an approval. It checks the acceptance criteria first,
+then correctness, then the tests, and writes three files (`comment.md`,
+`private.md`, `verdict.json`) for a step with no model in it to post. It never
+posts, pushes or approves itself. A review must be run with the brief taken from a
+release of this repository, never from the pull request under review, so a change
+can't rewrite the reviewer that judges it.
+
+These files are rules, like `AGENTS.md`: nothing in them enforces anything. They
+never repeat or weaken a rule from paddock's `AGENTS.md`, which wins where the two
+differ. The release fan-out does not copy them into the other repositories yet;
+until it does, they are read from here.
+
+### Lanes
+
+`lanes.json` sorts a pull request into a lane by the paths it changes, and
+`lanes.py` is the reference for what its patterns mean:
+
+```sh
+git diff --name-status origin/main...HEAD | python3 agent/lanes.py --repo those-who-run/ecu
+```
+
+It prints one word:
+
+- `sensitive`: any path matches a sensitive pattern: the workflows, `.claude/`,
+  `AGENTS.md`, an ADR, the contracts' `proto/`, the deploy manifests, a Dockerfile,
+  a dependency manifest, a migration. One such file makes the whole change
+  sensitive. A repository may add patterns of its own under `repositories`, and
+  everything in this repository is sensitive.
+- `light`: every path is documentation, or a test file the change adds. An edited,
+  renamed or deleted test is not light, since that is where a weakened test hides.
+- `standard`: everything else.
+
+The lane changes how deep the review goes and how closely the maintainer reads. It
+never changes who merges. No model decides it, so a pull request can't describe
+itself into a lighter lane. A repository can only add sensitive patterns: it can't
+declare its own code light.
 
 ## Running the tests
 
