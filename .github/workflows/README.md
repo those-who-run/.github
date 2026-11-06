@@ -711,12 +711,43 @@ release, with [`scripts/fan_out.py`](../../scripts/fan_out.py):
   tag comment can't be compared with the release (it may be a later one), so the
   file that holds it is left as it is and the summary says so;
 - the preset's pin in `renovate.json`, `github>those-who-run/.github#vX.Y.Z`;
-- the guard copy: `.claude/hooks/guard.py` and `.claude/settings.json` become
-  `agent/guard.py` and `agent/settings.json` at the tag, byte for byte, where the
-  repository has them (each repository's guard-copy check compares both against the
-  commit its CI pins);
+- the copies in `.claude/`: every file the release's manifest, `agent/copies.json`,
+  lists, written byte for byte from `agent/` at the tag to its path under
+  `.claude/` (the guard, its settings, the skills, the agents' briefs), and created
+  with its directories where the repository doesn't have it. Each repository's
+  check of its copies compares them against the commit its CI pins. A release from
+  before the manifest has none: it copies `agent/guard.py` to
+  `.claude/hooks/guard.py` and `agent/settings.json` to `.claude/settings.json`,
+  only where the repository has them, as every release did until then;
+- stale copies: a tracked file at `.claude/skills/twr-*/**` or
+  `.claude/agents/twr-*.md` that the manifest doesn't list is removed. Nothing else
+  under `.claude/` is ever removed: a skill of the repository's own, under another
+  name, stays;
+- `.gitignore`: every repository ignores `.claude/*` with exceptions for the guard's
+  files, so where its rules ignore a listed copy (asked with `git check-ignore`,
+  tracked already or not), an exception for the copy's directory
+  (`!.claude/skills/`, `!.claude/agents/`) is added after the file's last `.claude`
+  rule, under one comment line, and nothing else in it changes. A `.gitignore` that
+  lets the copies through is not touched. If a copy would still be ignored, by a
+  rule the exception can't undo or one in another file, the repository fails and
+  the summary names the rule;
 - in `chassis`, the template, the same in its template files: the `.jinja`
-  siblings, and the same paths under copier's `_subdirectory` if it sets one.
+  siblings of the workflows and `renovate.json`, and the same paths, copies,
+  stale copies and `.gitignore` included, under copier's `_subdirectory` if it sets
+  one. A copy is written at its plain path, never with the template suffix, since
+  copier renders only files that carry the suffix and copies the rest as bytes: a
+  repository made from the template gets the canonical file even when a skill's
+  text quotes a `${{ }}`, `[[ ]]` or `[% %]`. A `.jinja` sibling of a copy, or a
+  `.gitignore.jinja`, is left alone with a note in the summary, as the fan-out can't
+  know what either renders to.
+
+The manifest is read at the tag's commit and checked before any repository is
+touched: one that isn't a JSON object of path to path, lists a source twice, names
+a source outside `agent/` or missing at the tag, or a destination outside
+`.claude/`, with `..` or a backslash, given twice, inside another, ending in
+`.jinja` or `.claude/guard.json` (each repository's own values), or that doesn't
+list the guard's two files at their destinations above, stops the run with exit 2
+and its reason, and no PR is opened.
 
 The PR's branch is `chore/github-vX.Y.Z`, its title `ci: those-who-run/.github
 vX.Y.Z`, and its body links the release notes. Renovate leaves these updates to it:
@@ -733,12 +764,14 @@ so a push made meanwhile is never overwritten. When a release's PR is opened, an
 open fan-out PR by the bot for an earlier release in that repository is closed, with
 a comment naming the new PR; its branch is kept.
 
-The script reads and writes only regular files that git tracks (mode `100644`). A
-symbolic link or a submodule where a workflow file, `renovate.json`, a guard copy or
-a directory above them should be fails that repository, before anything is read or
-written, `--dry-run` included; every path is also checked to stay inside the clone
-before each read and write. A file that isn't UTF-8 is left as it is, with a note in
-the summary.
+The script reads, writes and removes only regular files that git tracks (mode
+`100644`), and creates a copy only where git tracks nothing. A symbolic link or a
+submodule where a workflow file, `renovate.json`, a copy or a directory above them
+should be, or anything but a regular file under the copies' own names
+(`.claude/skills/twr-*`, `.claude/agents/twr-*.md`), fails that repository, before
+anything is read or written, `--dry-run` included; every path is also checked to
+stay inside the clone before each read and write. A text file that isn't UTF-8 is
+left as it is, with a note in the summary.
 
 One repository failing doesn't stop the others, whatever the error: the job's
 summary has a row for each repository, and the job fails at the end if any failed.
@@ -788,9 +821,10 @@ To see what a release would change, without pushing or opening anything:
 python3 scripts/fan_out.py --tag vX.Y.Z --dry-run [--repo those-who-run/<name>]
 ```
 
-It reads the release's `agent/` files from this checkout at the tag, and prints
-each repository's diff. `tests/test_fan_out.py` runs the script against a stub `gh`
-and local git repositories, and checks the job.
+It reads the release's manifest and `agent/` files from this checkout at the tag,
+and prints each repository's diff, new and removed files included.
+`tests/test_fan_out.py` runs the script against a stub `gh` and local git
+repositories, with manifests of its own, and checks the job.
 
 ## image.yml and image-publish.yml
 

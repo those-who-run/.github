@@ -6,7 +6,9 @@ Each repository is a bare git repository under a temporary directory, which the
 script clones and pushes to through FAN_OUT_GIT_BASE. The stub `gh` keeps the open
 PRs in a JSON file, answers `gh pr list`, `gh pr create` and the `gh api` lookup of a
 bot's ID, and logs every call. The release's files come from a local git repository
-standing in for this one, tagged at the release.
+standing in for this one, tagged at the release. It has no manifest
+(`agent/copies.json`), as every release before the manifest; the tests of the
+manifest give it one of their own, so they don't depend on this repository's.
 
 Standard library only; CI's `test` job runs it:
 
@@ -45,6 +47,49 @@ BRANCH = f"chore/github-{NEW}"
 TITLE = f"ci: those-who-run/.github {NEW}"
 GUARD = b"# the guard at the release\nprint('guard')\n"
 SETTINGS = b'{"hooks": {"release": true}}\n'
+# A skill with what copier would render, or choke on, in a file with its suffix.
+SKILL = (b"---\nname: twr-dev\n---\n\n# The loop\n\nA workflow's ${{ github.sha }}, and a template's "
+         b"{{ name }}, [[ name ]] and [% if image %], stay as they are.\n")
+REVIEWER = b"---\nname: twr-reviewer\n---\n\nThe reviewer's brief.\n"
+MANIFEST = {
+    "agent/agents/twr-reviewer.md": ".claude/agents/twr-reviewer.md",
+    "agent/guard.py": ".claude/hooks/guard.py",
+    "agent/settings.json": ".claude/settings.json",
+    "agent/skills/twr-dev/SKILL.md": ".claude/skills/twr-dev/SKILL.md",
+}
+# What each destination holds at the release.
+COPIED = {
+    ".claude/agents/twr-reviewer.md": REVIEWER,
+    ".claude/hooks/guard.py": GUARD,
+    ".claude/settings.json": SETTINGS,
+    ".claude/skills/twr-dev/SKILL.md": SKILL,
+}
+# The rules every repository has today: the guard's files tracked, the rest of
+# .claude/ ignored, the skills and the agents' briefs with it.
+GITIGNORE = (
+    "__pycache__/\n"
+    "# Claude Code: only the shared settings, the guard and its config are tracked;\n"
+    "# the rest, among it the worktrees in .claude/worktrees/, stays out.\n"
+    ".claude/*\n"
+    "!.claude/settings.json\n"
+    "!.claude/guard.json\n"
+    "!.claude/hooks/\n"
+    ".claude/hooks/*\n"
+    "!.claude/hooks/guard.py\n"
+)
+AFTER = ".cache/\nbuild/\n"
+EXCEPTIONS = (
+    "# Tracked: the copies of those-who-run/.github's agent/ files that its agent/copies.json lists.\n"
+    "!.claude/agents/\n"
+    "!.claude/skills/\n"
+)
+# A repository as each is today: the guard at an older release, and those rules.
+HELD = {
+    ".claude/hooks/guard.py": b"# an old guard\n",
+    ".claude/settings.json": b"{}\n",
+    ".claude/guard.json": "{}\n",
+    ".gitignore": GITIGNORE + AFTER,
+}
 
 STUB = r'''
 import json, os, sys
@@ -184,7 +229,9 @@ class FanOut(unittest.TestCase):
         self.sha = git(self.source, "rev-parse", "HEAD").strip()
 
     def commit(self, repo: Path):
-        git(repo, "add", "-A")
+        # --force: a fixture may hold files its own .gitignore ignores, as a
+        # repository does once it tracks them.
+        git(repo, "add", "-A", "--force")
         git(repo, "commit", "--quiet", "-m", "init")
 
     def save(self):
@@ -729,6 +776,557 @@ class FanOut(unittest.TestCase):
         names = fan_out.repositories(fan_out.LIST)
         self.assertNotIn("those-who-run/.github", names)
         self.assertIn("those-who-run/chassis", names)
+
+    # The manifest: what a release lists in agent/copies.json is what is copied.
+
+    def release(self, manifest: dict | None = None, files: dict | None = None, raw: bytes | None = None):
+        """Give the release a manifest, and the skill and the brief it lists. files
+        adds to the release's files or replaces them; raw is the manifest's bytes as
+        they are."""
+        every = {"agent/agents/twr-reviewer.md": REVIEWER, "agent/skills/twr-dev/SKILL.md": SKILL, **(files or {})}
+        listing = json.dumps(MANIFEST if manifest is None else manifest, indent=2).encode() + b"\n"
+        every.setdefault("agent/copies.json", listing if raw is None else raw)
+        for path, content in every.items():
+            target = self.source / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink() or target.exists():
+                target.unlink()
+            if isinstance(content, Link):
+                target.symlink_to(content.target)
+            else:
+                target.write_bytes(content)
+        self.commit(self.source)
+        git(self.source, "tag", "--force", NEW)
+        self.sha = git(self.source, "rev-parse", "HEAD").strip()
+
+    def raw(self, name: str, path: str, branch: str = BRANCH) -> bytes:
+        bare = self.tmp / "remotes" / ORG / f"{name}.git"
+        return subprocess.run(["git", "show", f"{branch}:{path}"], cwd=bare, check=True, capture_output=True,
+                              env={**ENV, **GIT_ENV}).stdout
+
+    def tree(self, name: str, branch: str = BRANCH) -> list[str]:
+        bare = self.tmp / "remotes" / ORG / f"{name}.git"
+        return git(bare, "ls-tree", "-r", "--name-only", branch).splitlines()
+
+    def checked_out(self, name: str, branch: str = BRANCH) -> Path:
+        """A checkout of the branch, to ask git about it."""
+        work = self.tmp / "checked-out" / name
+        git(self.tmp, "clone", "--quiet", "--branch", branch, str(self.tmp / "remotes" / ORG / f"{name}.git"), str(work))
+        return work
+
+    def ignores(self, work: Path, path: str) -> bool:
+        done = subprocess.run(["git", "check-ignore", "--no-index", "--quiet", path], cwd=work, env={**ENV, **GIT_ENV})
+        self.assertIn(done.returncode, (0, 1))
+        return done.returncode == 0
+
+    def test_a_release_without_a_manifest_copies_the_guard_alone(self):
+        # As before the manifest: the release has skills, but lists nothing, so only
+        # the guard moves, where the repository has it. Nothing is added, a file
+        # under the copies' names stays, and .gitignore is left alone.
+        (self.source / "agent" / "skills" / "twr-dev").mkdir(parents=True)
+        (self.source / "agent" / "skills" / "twr-dev" / "SKILL.md").write_bytes(SKILL)
+        self.commit(self.source)
+        git(self.source, "tag", "--force", NEW)
+        self.sha = git(self.source, "rev-parse", "HEAD").strip()
+        self.remote("salsa", {**HELD, ".claude/skills/twr-old/SKILL.md": b"old\n"})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.tree("salsa"), [".claude/guard.json", ".claude/hooks/guard.py", ".claude/settings.json",
+                                              ".claude/skills/twr-old/SKILL.md", ".gitignore"])
+        self.assertEqual(self.raw("salsa", ".claude/hooks/guard.py"), GUARD)
+        self.assertEqual(self.raw("salsa", ".claude/settings.json"), SETTINGS)
+        self.assertEqual(self.raw("salsa", ".gitignore").decode(), GITIGNORE + AFTER)
+        [pr] = self.prs()
+        self.assertIn("Changed files:\n\n- `.claude/hooks/guard.py`\n- `.claude/settings.json`\n\n", pr["body"])
+        self.assertIn(f"{ORG}/salsa: opened https://github.com/{ORG}/salsa/pull/1 (2 files)", done.stdout)
+
+    def test_a_manifest_copies_the_skills_and_the_agents(self):
+        self.release()
+        self.remote("salsa", HELD)
+        done = self.run_fan_out("--app-slug", "twr-release")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for path, content in COPIED.items():
+            with self.subTest(path):
+                self.assertEqual(self.raw("salsa", path), content)
+        # The repository's own guard config isn't a copy, and nothing else arrives:
+        # not the manifest, nor a file the manifest doesn't list.
+        self.assertEqual(self.raw("salsa", ".claude/guard.json"), b"{}\n")
+        self.assertEqual(self.tree("salsa"), sorted([*COPIED, ".claude/guard.json", ".gitignore"]))
+        bare = self.tmp / "remotes" / ORG / "salsa.git"
+        self.assertEqual(git(bare, "rev-list", "--count", f"main..{BRANCH}").strip(), "1")
+        # Each a regular file, as git tracks the guard's.
+        modes = {line.split()[0] for line in git(bare, "ls-tree", "-r", BRANCH).splitlines()}
+        self.assertEqual(modes, {"100644"})
+        [pr] = self.prs()
+        for path in COPIED:
+            self.assertIn(f"- `{path}`\n", pr["body"])
+        self.assertIn("- the agent guard in `.claude/`, copied byte for byte from `agent/` at the release;\n", pr["body"])
+        self.assertIn("- the skills and the agents' briefs in `.claude/`", pr["body"])
+        self.assertIn("- `.gitignore`: an exception for each directory of copies its rules ignored, and "
+                      "nothing else.\n", pr["body"])
+        self.assertIn(f"{ORG}/salsa: opened https://github.com/{ORG}/salsa/pull/1 (5 files)", done.stdout)
+
+    def test_a_copy_is_written_where_the_repository_has_none(self):
+        # With a manifest every listed copy is written, the guard's included. A
+        # guard with no config blocks every command, so the result says so.
+        self.release()
+        self.remote("radio", {"renovate.json": RENOVATE})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.tree("radio"), sorted([*COPIED, "renovate.json"]))
+        self.assertIn(".claude/hooks/guard.py is new and .claude/guard.json is missing: the guard blocks every "
+                      "command until the repository has one", done.stdout)
+        # Where the config is there, nothing is said.
+        self.remote("dash", {".claude/guard.json": "{}\n"})
+        done = self.run_fan_out("--repo", f"{ORG}/dash")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("is missing", done.stdout)
+
+    def test_a_stale_copy_is_removed_and_the_repositorys_own_kept(self):
+        self.release()
+        own = {
+            ".claude/skills/pit-stop/SKILL.md": b"the repository's own skill\n",
+            ".claude/skills/pit-stop/twr-notes.md": b"its own file\n",
+            ".claude/agents/strategist.md": b"the repository's own agent\n",
+            ".claude/agents/twr-notes.txt": b"not a brief\n",
+            ".claude/commands/twr-old.md": b"elsewhere under .claude/\n",
+            "docs/.claude/skills/twr-old/SKILL.md": b"not this repository's .claude/\n",
+        }
+        stale = {
+            ".claude/skills/twr-old/SKILL.md": b"a skill since renamed\n",
+            ".claude/skills/twr-old/notes/more.md": b"and a file of it\n",
+            ".claude/skills/twr-dev/EXTRA.md": b"a file the skill no longer has\n",
+            ".claude/agents/twr-old.md": b"a brief since removed\n",
+        }
+        self.remote("salsa", {**HELD, **{p: COPIED[p] for p in COPIED}, **own, **stale,
+                              ".gitignore": GITIGNORE + EXCEPTIONS + AFTER})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.tree("salsa"), sorted([*COPIED, *own, ".claude/guard.json", ".gitignore"]))
+        for path, content in own.items():
+            with self.subTest(path):
+                self.assertEqual(self.raw("salsa", path), content)
+        [pr] = self.prs()
+        for path in stale:
+            self.assertIn(f"- `{path}` (removed)\n", pr["body"])
+        self.assertIn("- stale copies, removed:", pr["body"])
+        self.assertNotIn("`.gitignore`", pr["body"])
+        self.assertIn(f"{ORG}/salsa: opened https://github.com/{ORG}/salsa/pull/1 (4 files)", done.stdout)
+        # A second run finds the PR holding the same removals.
+        again = self.run_fan_out()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn(f"{ORG}/salsa: PR open https://github.com/{ORG}/salsa/pull/1 (already open, left alone)", again.stdout)
+
+    def test_the_gitignore_lets_the_copies_be_tracked(self):
+        self.release()
+        self.remote("salsa", HELD)
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # Two exceptions and their comment, after the last .claude rule; every other
+        # line as it was.
+        self.assertEqual(self.raw("salsa", ".gitignore").decode(), GITIGNORE + EXCEPTIONS + AFTER)
+        work = self.checked_out("salsa")
+        for path in COPIED:
+            with self.subTest(path):
+                self.assertFalse(self.ignores(work, path))
+        # A file dropped beside the copies is tracked by a plain `git add`, which an
+        # ignored one is not.
+        (work / ".claude/skills/twr-dev/MORE.md").write_text("x\n")
+        git(work, "add", "-A")
+        self.assertIn("A  .claude/skills/twr-dev/MORE.md", git(work, "status", "--short"))
+        # The rest of .claude/ stays out.
+        for path in (".claude/worktrees/agent/README.md", ".claude/settings.local.json", ".claude/hooks/other.py",
+                     ".claude/todo.md"):
+            with self.subTest(path):
+                self.assertTrue(self.ignores(work, path))
+
+    def test_a_gitignore_that_lets_the_copies_through_is_left_alone(self):
+        self.release()
+        cases = {
+            "the exceptions are there": GITIGNORE + "!.claude/skills/\n!.claude/agents/\n" + AFTER,
+            "nothing ignores .claude": "build/\n",
+            "there is none": None,
+        }
+        for n, (case, rules) in enumerate(cases.items()):
+            with self.subTest(case):
+                name = f"repo{n}"
+                files = {k: v for k, v in HELD.items() if k != ".gitignore"}
+                if rules is not None:
+                    files[".gitignore"] = rules
+                self.remote(name, files)
+                done = self.run_fan_out("--repo", f"{ORG}/{name}")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(self.raw(name, ".claude/skills/twr-dev/SKILL.md"), SKILL)
+                self.assertEqual(".gitignore" in self.tree(name), rules is not None)
+                if rules is not None:
+                    self.assertEqual(self.raw(name, ".gitignore").decode(), rules)
+                [pr] = [p for p in self.prs() if p["repo"] == f"{ORG}/{name}"]
+                self.assertNotIn("`.gitignore`", pr["body"])
+
+    def test_copies_tracked_under_rules_that_ignore_them_get_their_exceptions(self):
+        # Someone added the copies with `git add --force` and left the rules alone.
+        # git then refuses to stage a change to a file under the ignored directory,
+        # so the rules are put right for every listed copy, changed or not.
+        self.release()
+        self.remote("salsa", {**HELD, ".claude/skills/twr-dev/SKILL.md": b"an older skill\n",
+                              ".claude/agents/twr-reviewer.md": REVIEWER,
+                              ".claude/skills/twr-old/SKILL.md": b"stale\n"})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.raw("salsa", ".claude/skills/twr-dev/SKILL.md"), SKILL)
+        self.assertEqual(self.raw("salsa", ".gitignore").decode(), GITIGNORE + EXCEPTIONS + AFTER)
+        self.assertEqual(self.tree("salsa"), sorted([*COPIED, ".claude/guard.json", ".gitignore"]))
+        work = self.checked_out("salsa")
+        for path in COPIED:
+            with self.subTest(path):
+                self.assertFalse(self.ignores(work, path))
+
+    def test_a_stale_copy_is_removed_from_a_directory_the_rules_ignore(self):
+        # The release lists no brief, so nothing asks for an exception for
+        # .claude/agents/, and the stale brief there is tracked but ignored.
+        self.release(manifest={k: v for k, v in MANIFEST.items() if "agents" not in k})
+        rules = GITIGNORE + "!.claude/skills/\n" + AFTER
+        self.remote("salsa", {**HELD, ".claude/skills/twr-dev/SKILL.md": SKILL, ".claude/hooks/guard.py": GUARD,
+                              ".claude/settings.json": SETTINGS, ".claude/agents/twr-old.md": b"stale\n",
+                              ".gitignore": rules})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.tree("salsa"), [".claude/guard.json", ".claude/hooks/guard.py", ".claude/settings.json",
+                                              ".claude/skills/twr-dev/SKILL.md", ".gitignore"])
+        self.assertEqual(self.raw("salsa", ".gitignore").decode(), rules)
+        self.assertIn(f"{ORG}/salsa: opened https://github.com/{ORG}/salsa/pull/1 (1 file)", done.stdout)
+
+    def test_only_the_exception_that_is_missing_is_added(self):
+        self.release()
+        self.remote("salsa", {**HELD, ".gitignore": GITIGNORE + "!.claude/skills/\n" + AFTER})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.raw("salsa", ".gitignore").decode(),
+                         GITIGNORE + "!.claude/skills/\n" + EXCEPTIONS.replace("!.claude/skills/\n", "") + AFTER)
+
+    def test_the_exceptions_keep_the_files_shape(self):
+        note, lines = EXCEPTIONS.splitlines()[0], ["!.claude/agents/", "!.claude/skills/"]
+        self.assertEqual(fan_out.with_exceptions(GITIGNORE + AFTER, lines), GITIGNORE + EXCEPTIONS + AFTER)
+        # CRLF stays CRLF.
+        crlf = (GITIGNORE + AFTER).replace("\n", "\r\n")
+        self.assertEqual(fan_out.with_exceptions(crlf, lines), (GITIGNORE + EXCEPTIONS + AFTER).replace("\n", "\r\n"))
+        # A last line with no newline gets one, and the new lines theirs.
+        self.assertEqual(fan_out.with_exceptions(".claude/*", lines), ".claude/*\n" + EXCEPTIONS)
+        # No rule about .claude: at the end. An empty file: the lines alone.
+        self.assertEqual(fan_out.with_exceptions("*.log\n", lines), "*.log\n" + EXCEPTIONS)
+        self.assertEqual(fan_out.with_exceptions("", lines), EXCEPTIONS)
+        # Every way of writing a rule about .claude counts as one, and a name that
+        # only starts the same does not.
+        for rule in (".claude/", "/.claude/*", "!/.claude/hooks/", ".claude", "  !.claude/x"):
+            with self.subTest(rule):
+                self.assertEqual(fan_out.with_exceptions(f"{rule}\nbuild/\n", lines), f"{rule}\n{EXCEPTIONS}build/\n")
+        self.assertEqual(fan_out.with_exceptions(".claudette/\nbuild/\n", lines), ".claudette/\nbuild/\n" + EXCEPTIONS)
+        # The comment is written once, whenever a later release adds a line.
+        self.assertEqual(fan_out.with_exceptions(GITIGNORE + EXCEPTIONS, ["!.claude/commands/"]),
+                         GITIGNORE + EXCEPTIONS + "!.claude/commands/\n")
+        self.assertEqual(note.count("\n"), 0)
+        # The exception is for the directory under .claude/, or the file itself there.
+        self.assertEqual(fan_out.exception(".claude/skills/twr-dev/SKILL.md"), "!.claude/skills/")
+        self.assertEqual(fan_out.exception(".claude/agents/twr-reviewer.md"), "!.claude/agents/")
+        self.assertEqual(fan_out.exception(".claude/settings.json"), "!.claude/settings.json")
+
+    def test_a_copy_no_exception_can_free_fails_the_repository(self):
+        # An exception for the copy's directory is all the fan-out adds. Where that
+        # doesn't let the copy through, it says which rule is in the way and leaves
+        # the repository to the maintainer, rather than push a PR without the copy.
+        self.release()
+        cases = {
+            "a rule on the file's name": ({".gitignore": "*.md\n"}, ".gitignore:1: *.md"),
+            "a rule in another file": ({".gitignore": GITIGNORE, ".claude/.gitignore": "agents/\nskills/\n"},
+                                       ".claude/.gitignore:1: agents/"),
+            "no .gitignore in the root": ({".claude/.gitignore": "agents/\nskills/\n"},
+                                          ".claude/.gitignore:1: agents/"),
+        }
+        for n, (case, (files, rule)) in enumerate(cases.items()):
+            for dry in (False, True):
+                with self.subTest(case, dry_run=dry):
+                    name, fine = f"stuck{n}{'d' if dry else ''}", f"fine{n}{'d' if dry else ''}"
+                    self.remote(name, {**{k: v for k, v in HELD.items() if k != ".gitignore"}, **files})
+                    self.remote(fine, HELD)
+                    done = self.run_fan_out("--repo", f"{ORG}/{name}", "--repo", f"{ORG}/{fine}",
+                                            *(["--dry-run"] if dry else []))
+                    self.assertEqual(done.returncode, 1, done.stdout)
+                    self.assertIn(f"{ORG}/{name}: failed (.claude/agents/twr-reviewer.md is a copy the repository's "
+                                  f"ignore rules leave out ({rule})", done.stderr)
+                    self.assertEqual(self.branches(name), ["main"])
+                    # The other repository is moved all the same.
+                    self.assertIn(f"{ORG}/{fine}: {'dry run' if dry else 'opened'}", done.stdout)
+        self.assertEqual(sorted(p["repo"] for p in self.prs()), [f"{ORG}/fine{n}" for n in range(3)])
+
+    def test_a_template_gets_the_copies_as_plain_files(self):
+        # chassis: the repository's own .claude/, and the template's under
+        # `_subdirectory`. A copy is a plain file in both, never one with the
+        # template suffix, so copier copies its bytes and renders nothing in them.
+        self.release()
+        self.remote("chassis", {
+            **HELD,
+            "copier.yml": "_subdirectory: template\n_templates_suffix: .jinja\n",
+            "template/.claude/hooks/guard.py": b"# old\n",
+            "template/.claude/settings.json": b"{}\n",
+            "template/.claude/guard.json.jinja": '{"owner": "[[ owner ]]"}\n',
+            "template/.gitignore": GITIGNORE + AFTER,
+            "template/.gitignore.jinja": "[% include '.gitignore' %]\n",
+            "template/.claude/skills/twr-old/SKILL.md": b"a skill since renamed\n",
+            "template/.claude/skills/twr-dev/SKILL.md.jinja": b"[[ name ]]'s loop\n",
+            "template/.claude/agents/twr-reviewer.md.jinja": b"[[ name ]]'s reviewer\n",
+            "template/.claude/skills/[[name]]/SKILL.md.jinja": b"the new repository's own skill\n",
+            "template/renovate.json.jinja": RENOVATE,
+        })
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for root in ("", "template/"):
+            for path, content in COPIED.items():
+                with self.subTest(root + path):
+                    self.assertEqual(self.raw("chassis", root + path), content)
+            self.assertEqual(self.raw("chassis", f"{root}.gitignore").decode(), GITIGNORE + EXCEPTIONS + AFTER)
+        tree = self.tree("chassis")
+        # No copy with the template suffix is written, and the one that was under the
+        # copies' names is stale; the template's own files stay.
+        self.assertEqual([p for p in tree if p.endswith(".jinja")], [
+            "template/.claude/agents/twr-reviewer.md.jinja", "template/.claude/guard.json.jinja",
+            "template/.claude/skills/[[name]]/SKILL.md.jinja", "template/.gitignore.jinja",
+            "template/renovate.json.jinja"])
+        self.assertNotIn("template/.claude/skills/twr-old/SKILL.md", tree)
+        self.assertEqual(self.raw("chassis", "template/.gitignore.jinja"), b"[% include '.gitignore' %]\n")
+        self.assertEqual(self.on_branch("chassis", "template/renovate.json.jinja"), RENOVATE.replace(OLD, NEW))
+        # What the fan-out can't settle is left for the maintainer, by name.
+        self.assertIn("template/.claude/agents/twr-reviewer.md.jinja is beside the copy "
+                      "template/.claude/agents/twr-reviewer.md: copier renders it over the copy", done.stdout)
+        self.assertIn("template/.gitignore.jinja is the template of a new repository's .gitignore and was left as "
+                      "it is: check that it lets .claude/agents/, .claude/skills/ be tracked", done.stdout)
+        self.assertNotIn("SKILL.md.jinja is beside", done.stdout)
+        # The template has its config as a template, so its new copies need no note.
+        self.assertNotIn("is missing", done.stdout)
+
+    def test_a_repository_with_the_copies_gets_no_pr(self):
+        self.release()
+        self.remote("ecu", {**HELD, **COPIED, ".claude/skills/pit-stop/SKILL.md": b"its own\n",
+                            ".gitignore": GITIGNORE + EXCEPTIONS + AFTER})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.prs(), [])
+        self.assertEqual(self.branches("ecu"), ["main"])
+        self.assertIn(f"{ORG}/ecu: current", done.stdout)
+
+    def test_a_second_run_after_the_merge_changes_nothing(self):
+        self.release()
+        self.remote("ecu", {**HELD, ".claude/skills/twr-old/SKILL.md": b"stale\n", "renovate.json": RENOVATE,
+                            ".github/workflows/ci.yml": CI})
+        self.assertEqual(self.run_fan_out().returncode, 0)
+        # The maintainer merges the PR.
+        bare = self.tmp / "remotes" / ORG / "ecu.git"
+        git(bare, "update-ref", "refs/heads/main", f"refs/heads/{BRANCH}")
+        git(bare, "update-ref", "-d", f"refs/heads/{BRANCH}")
+        self.state = json.loads(Path(self.env["GH_STATE"]).read_text())
+        self.state["prs"][0]["state"] = "closed"
+        self.save()
+        again = self.run_fan_out()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn(f"{ORG}/ecu: current (main is already on {NEW})", again.stdout)
+        self.assertEqual(self.branches("ecu"), ["main"])
+        self.assertEqual(len(self.prs()), 1)
+        dry = self.run_fan_out("--dry-run")
+        self.assertNotIn("diff --git", dry.stdout)
+
+    def test_a_dry_run_shows_the_new_and_the_stale_copies_and_writes_nothing(self):
+        self.release()
+        self.remote("ecu", {**HELD, ".claude/skills/twr-old/SKILL.md": b"stale\n"})
+        done = self.run_fan_out("--dry-run")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("new file mode 100644\n", done.stdout)
+        self.assertIn("+++ b/.claude/skills/twr-dev/SKILL.md\n", done.stdout)
+        self.assertIn("+A workflow's ${{ github.sha }}", done.stdout)
+        self.assertIn("deleted file mode 100644\n", done.stdout)
+        self.assertIn("--- a/.claude/skills/twr-old/SKILL.md\n", done.stdout)
+        self.assertIn("+!.claude/skills/\n", done.stdout)
+        self.assertIn(f"{ORG}/ecu: dry run (would open a PR changing 6 files)", done.stdout)
+        self.assertEqual(self.prs(), [])
+        self.assertEqual(self.branches("ecu"), ["main"])
+        self.assertEqual({tuple(c["argv"][:2]) for c in self.calls()}, {("pr", "list")})
+
+    def test_a_manifest_with_a_fault_stops_the_run_before_any_repository(self):
+        self.remote("ecu", HELD)
+        outside = self.outside()
+        listed = json.dumps(MANIFEST)
+        cases = {
+            "not JSON": ({"raw": b"{not json"}, "is not JSON"),
+            "not UTF-8": ({"raw": b'{"agent/guard.py": "\xff"}'}, "is not JSON"),
+            "a list": ({"raw": b'[["agent/guard.py", ".claude/hooks/guard.py"]]'}, "is not a JSON object"),
+            "a string": ({"raw": b'"agent/guard.py"'}, "is not a JSON object"),
+            "empty": ({"raw": b"{}"}, "doesn't copy agent/guard.py to .claude/hooks/guard.py"),
+            "without the guard": ({"manifest": {k: v for k, v in MANIFEST.items() if k != "agent/guard.py"}},
+                                  "doesn't copy agent/guard.py to .claude/hooks/guard.py, where every repository has it"),
+            "without the settings": ({"manifest": {k: v for k, v in MANIFEST.items() if k != "agent/settings.json"}},
+                                     "doesn't copy agent/settings.json to .claude/settings.json"),
+            "the guard somewhere else": ({"manifest": {**MANIFEST, "agent/guard.py": ".claude/hooks/other.py"}},
+                                         "doesn't copy agent/guard.py to .claude/hooks/guard.py"),
+            "a destination that is a list": ({"raw": b'{"agent/guard.py": [".claude/hooks/guard.py"]}'},
+                                             "a destination that is not a string"),
+            "a destination that is an object": ({"raw": b'{"agent/guard.py": {"to": ".claude/hooks/guard.py"}}'},
+                                                "a destination that is not a string"),
+            "a source twice": ({"raw": listed.replace("}", ', "agent/guard.py": ".claude/hooks/other.py"}').encode()},
+                               "lists agent/guard.py twice"),
+            "a source the release doesn't have": ({"manifest": {**MANIFEST, "agent/skills/twr-gone/SKILL.md":
+                                                                ".claude/skills/twr-gone/SKILL.md"}},
+                                                  "agent/skills/twr-gone/SKILL.md, which is not a regular file in "
+                                                  "the release (it is missing)"),
+            "a source that is a directory": ({"manifest": {"agent/skills": ".claude/skills"}},
+                                             "agent/skills, which is not a regular file in the release"),
+            "a source that is a link": ({"manifest": {**MANIFEST, "agent/link.md": ".claude/link.md"},
+                                         "files": {"agent/link.md": Link(outside / "victim.py")}},
+                                        "agent/link.md, which is not a regular file in the release (mode 120000)"),
+            "a source outside agent/": ({"manifest": {"scripts/fan_out.py": ".claude/fan_out.py"}},
+                                        "'scripts/fan_out.py', which is not a plain path under agent/"),
+            "a source that climbs out": ({"manifest": {"agent/../LICENSE": ".claude/LICENSE"}},
+                                         "'agent/../LICENSE', which is not a plain path under agent/"),
+            "a destination outside .claude/": ({"manifest": {"agent/guard.py": ".github/workflows/guard.py"}},
+                                               "'.github/workflows/guard.py', which is not a plain path under .claude/"),
+            "a destination that climbs out": ({"manifest": {"agent/guard.py": ".claude/../.github/workflows/ci.yml"}},
+                                              "which is not a plain path under .claude/"),
+            "a destination from the root": ({"manifest": {"agent/guard.py": "/.claude/hooks/guard.py"}},
+                                            "which is not a plain path under .claude/"),
+            "a destination that is .claude itself": ({"manifest": {"agent/guard.py": ".claude"}},
+                                                     "which is not a plain path under .claude/"),
+            "a destination under a name like .claude": ({"manifest": {"agent/guard.py": ".claudette/guard.py"}},
+                                                        "which is not a plain path under .claude/"),
+            "a destination with a backslash": ({"manifest": {"agent/guard.py": ".claude\\hooks\\guard.py"}},
+                                               "which is not a plain path under .claude/"),
+            "a destination with a space": ({"manifest": {"agent/guard.py": ".claude/hooks/the guard.py"}},
+                                           "which is not a plain path under .claude/"),
+            "a destination with an empty part": ({"manifest": {"agent/guard.py": ".claude//guard.py"}},
+                                                 "which is not a plain path under .claude/"),
+            "the repository's own config": ({"manifest": {"agent/guard.py": ".claude/guard.json"}},
+                                            "to .claude/guard.json, which is each repository's own"),
+            "a destination copier would render": ({"manifest": {"agent/guard.py": ".claude/hooks/guard.py.jinja"}},
+                                                  "which copier would render in a template"),
+            "two files to one destination": ({"manifest": {"agent/guard.py": ".claude/x", "agent/settings.json": ".claude/x"}},
+                                             "copies two files to .claude/x"),
+            "a destination inside another": ({"manifest": {"agent/guard.py": ".claude/x", "agent/settings.json": ".claude/x/y"}},
+                                             "copies to .claude/x and to .claude/x/y, inside it"),
+            "a manifest that is a link": ({"files": {"agent/copies.json": Link("guard.py")}},
+                                          "agent/copies.json at the release is not a regular file (mode 120000)"),
+        }
+        for case, (release, said) in cases.items():
+            self.release(**release)
+            for dry in (False, True):
+                with self.subTest(case, dry_run=dry):
+                    done = self.run_fan_out(*(["--dry-run"] if dry else []))
+                    self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                    self.assertIn(said, done.stderr)
+                    self.assertIn("no repository was touched", done.stderr)
+                    self.assertEqual(done.stdout, "")
+        # Not one call to gh, not one clone, and nothing from outside is printed.
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.branches("ecu"), ["main"])
+        self.assert_untouched(outside)
+
+    def test_links_where_a_copy_goes_are_refused(self):
+        self.release()
+        out = self.outside()
+        (out / "skills").mkdir()
+        cases = {
+            "the skills directory": {".claude/skills": Link(out / "skills")},
+            "a skill's directory": {".claude/skills/twr-dev": Link(out)},
+            "the agents directory": {".claude/agents": Link(out)},
+            "a new copy's place": {".claude/agents/twr-reviewer.md": Link(out / "victim.py")},
+            "a stale copy": {".claude/skills/twr-old/SKILL.md": Link(out / "victim.py")},
+            "a stale skill's directory": {".claude/skills/twr-old": Link(out)},
+            "a stale brief": {".claude/agents/twr-old.md": Link(out / "victim.py")},
+        }
+        for n, (case, files) in enumerate(cases.items()):
+            for dry in (False, True):
+                with self.subTest(case, dry_run=dry):
+                    name = f"link{n}{'d' if dry else ''}"
+                    self.remote(name, {**{k: v for k, v in HELD.items() if k != ".gitignore"}, **files})
+                    done = self.run_fan_out("--repo", f"{ORG}/{name}", *(["--dry-run"] if dry else []))
+                    self.assertEqual(done.returncode, 1, done.stdout)
+                    self.assertIn(f"{ORG}/{name}: failed", done.stderr)
+                    self.assertIn("refusing to follow it", done.stderr)
+                    self.assert_untouched(out)
+                    self.assertEqual(sorted(p.name for p in out.iterdir()), ["ci.yml", "skills", "victim.py"])
+                    self.assertEqual(list((out / "skills").iterdir()), [])
+                    self.assertEqual(self.branches(name), ["main"])
+                    self.assertNotIn("precious", done.stdout)
+        self.assertEqual(self.prs(), [])
+
+    def test_a_gitignore_that_is_a_link_is_not_written_through(self):
+        # Reached only when a copy is ignored by a rule elsewhere, since git reads
+        # no rules through a link.
+        self.release()
+        out = self.outside()
+        self.remote("ecu", {".claude/guard.json": "{}\n", ".gitignore": Link(out / "ci.yml"),
+                            ".claude/.gitignore": "skills/\n"})
+        done = self.run_fan_out()
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(".gitignore is not a regular file (mode 120000); refusing to follow it", done.stderr)
+        self.assert_untouched(out)
+        self.assertEqual(self.branches("ecu"), ["main"])
+
+    def test_a_file_or_a_directory_in_a_copys_way_fails_the_repository(self):
+        self.release()
+        cases = {
+            "a file where a directory goes": ({".claude/skills": "not a directory\n"},
+                                              ".claude/skills is a file where the directory of a copy should be"),
+            "a directory where a copy goes": ({".claude/agents/twr-reviewer.md/notes.md": "x\n"},
+                                              ".claude/agents/twr-reviewer.md is a directory where a copy should be"),
+            "a copy git tracks as a program": ({}, ".claude/hooks/guard.py is not a regular file (mode 100755)"),
+        }
+        for n, (case, (files, said)) in enumerate(cases.items()):
+            with self.subTest(case):
+                name = f"way{n}"
+                self.remote(name, {".claude/guard.json": "{}\n", ".claude/hooks/guard.py": b"# old\n", **files})
+                if not files:
+                    work = self.tmp / "work" / name
+                    git(work, "update-index", "--chmod=+x", ".claude/hooks/guard.py")
+                    git(work, "commit", "--quiet", "-m", "a program")
+                    git(work, "push", "--quiet", str(self.tmp / "remotes" / ORG / f"{name}.git"), "main")
+                self.remote(f"fine{n}", HELD)
+                done = self.run_fan_out("--repo", f"{ORG}/{name}", "--repo", f"{ORG}/fine{n}")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn(f"{ORG}/{name}: failed ({said}", done.stderr)
+                self.assertEqual(self.branches(name), ["main"])
+                self.assertIn(f"{ORG}/fine{n}: opened", done.stdout)
+
+    def test_a_new_copy_is_checked_on_disk_too(self):
+        # As for the files that are there: git's modes first, then the path on disk
+        # before each write, each enough alone.
+        clone = self.tmp / "clone-new"
+        (clone / ".claude").mkdir(parents=True)
+        out = self.outside()
+        (clone / ".claude" / "skills").symlink_to(out)
+        (clone / ".claude" / "agents").write_text("a file\n")
+        self.assertEqual(fan_out.safe(clone, ".claude/hooks/guard.py", new=True), clone / ".claude/hooks/guard.py")
+        for rel in (".claude/skills/twr-dev/SKILL.md", "../outside/new.md", ".claude/../../outside/new.md"):
+            with self.subTest(rel):
+                with self.assertRaises(fan_out.Failure):
+                    fan_out.safe(clone, rel, new=True)
+        # A file that isn't there is refused unless it is a new copy.
+        with self.assertRaises(fan_out.Failure):
+            fan_out.safe(clone, ".claude/hooks/guard.py")
+        for files in ({".claude/skills": "120000"}, {".claude/skills/twr-dev": "160000"}, {".claude": "120000"},
+                      {".claude/skills/twr-old/SKILL.md": "120000"}, {".claude/agents/twr-old.md": "160000"},
+                      {".claude/skills/twr-old": "160000"}):
+            with self.subTest(files):
+                with self.assertRaisesRegex(fan_out.Failure, "refusing to follow it"):
+                    fan_out.candidates(clone, files, tuple(COPIED), True)
+        # Without a manifest those names are nobody's, as before it.
+        self.assertEqual(fan_out.candidates(clone, {".claude/skills/twr-old/SKILL.md": "120000"}), ([], {}, []))
+
+    def test_this_repositorys_manifest_is_one_the_fan_out_takes(self):
+        # Whichever merges first, the manifest or this reader of it, the two are
+        # checked against each other from then on.
+        path = ROOT / "agent" / "copies.json"
+        if not path.is_file():
+            self.skipTest("agent/copies.json is not in this checkout yet")
+        modes = {p.relative_to(ROOT).as_posix(): "100644" for p in (ROOT / "agent").rglob("*")
+                 if p.is_file() and not p.is_symlink()}
+        copies = fan_out.manifest(path.read_bytes(), modes)
+        self.assertEqual({d: s for d, s in copies.items() if d in fan_out.COPIES}, fan_out.COPIES)
 
 
 class TheFanOutJob(unittest.TestCase):
