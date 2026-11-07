@@ -61,7 +61,10 @@ already blocks.
    stacked on another. No private value in the diff. Each new direct dependency is
    listed with its reason. The `Closes` or `Part of` line ends the body.
 5. **Run it.** Run `make check` and `make test` where the repository has them, and
-   say what ran and what could not.
+   say what ran and what could not. If `data/swapped.md` lists swapped steering
+   files, a failure of the guard-copy check is the swap's, not the pull request's:
+   compare the pull request's versions under `data/pr-files/` against the pin by
+   hand, and say so under Checked.
 
 The lane sets the depth:
 
