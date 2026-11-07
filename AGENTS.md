@@ -27,8 +27,18 @@ every repository at once.
 - A change to the guard or the settings is made in `agent/` and copied unchanged to
   `.claude/`; the `guard-copy` hook fails when the two differ. Each rule the guard
   gains has a blocked example and a near miss that passes in `agent/tests/`.
-- Docs change in the same PR: `agent/README.md` for the guard, this file for the
-  rules below.
+- A skill is a folder under `agent/skills/` named as its `name:` says, with a
+  description that says when to use it; the reviewer's brief is
+  `agent/agents/twr-reviewer.md`. A pattern added to `agent/lanes.json` has an
+  example that lands in the lane and a near miss in `agent/tests/test_lanes.py`.
+- `agent/copies.json` is the manifest of what every repository copies from
+  `agent/` and where: the guard's two files and every file under `agent/skills/`
+  and `agent/agents/`, each to a path under `.claude/`. Whatever copies or checks
+  those files reads it, at the release a repository pins. Adding a skill, or a
+  file to one, means adding its line: `agent/tests/test_copies.py` fails
+  otherwise.
+- Docs change in the same PR: `agent/README.md` for the guard, the skills, the
+  manifest and the lanes, this file for the rules below.
 
 ## Brand assets
 

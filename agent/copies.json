@@ -1,0 +1,11 @@
+{
+  "agent/agents/twr-reviewer.md": ".claude/agents/twr-reviewer.md",
+  "agent/guard.py": ".claude/hooks/guard.py",
+  "agent/settings.json": ".claude/settings.json",
+  "agent/skills/twr-deslop/SKILL.md": ".claude/skills/twr-deslop/SKILL.md",
+  "agent/skills/twr-dev/SKILL.md": ".claude/skills/twr-dev/SKILL.md",
+  "agent/skills/twr-fix-review/SKILL.md": ".claude/skills/twr-fix-review/SKILL.md",
+  "agent/skills/twr-pr-ready/SKILL.md": ".claude/skills/twr-pr-ready/SKILL.md",
+  "agent/skills/twr-proof/SKILL.md": ".claude/skills/twr-proof/SKILL.md",
+  "agent/skills/twr-test-audit/SKILL.md": ".claude/skills/twr-test-audit/SKILL.md"
+}
