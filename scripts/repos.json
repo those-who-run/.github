@@ -144,6 +144,18 @@
       "tags": ["v*"],
       "codeql": [],
       "merge_queue": true
+    },
+    "those-who-run/pit-crew": {
+      "checks": ["test", "checks / checks", "go / check", "image / build", "runner / build"],
+      "actions": true,
+      "approvals": 1,
+      "code_owners": true,
+      "actions_prs": false,
+      "issues": false,
+      "publishes": true,
+      "tags": ["v*"],
+      "codeql": ["go"],
+      "merge_queue": true
     }
   }
 }
