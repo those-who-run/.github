@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.16](https://github.com/those-who-run/.github/compare/v0.2.15...v0.2.16) (2026-11-07)
+
+
+### Features
+
+* **agent:** skills, the reviewer's brief and lanes ([#68](https://github.com/those-who-run/.github/issues/68)) ([8c8a0fd](https://github.com/those-who-run/.github/commit/8c8a0fdd888c050e3783f70dc50fb3ad1930e204))
+* **fan-out:** copy what the release's manifest lists ([#69](https://github.com/those-who-run/.github/issues/69)) ([b4d4bf6](https://github.com/those-who-run/.github/commit/b4d4bf67a8cf1cdbb6107b009e199d0889e22c98))
+
 ## [0.2.15](https://github.com/those-who-run/.github/compare/v0.2.14...v0.2.15) (2026-10-29)
 
 
