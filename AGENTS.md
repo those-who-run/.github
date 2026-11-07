@@ -27,8 +27,18 @@ every repository at once.
 - A change to the guard or the settings is made in `agent/` and copied unchanged to
   `.claude/`; the `guard-copy` hook fails when the two differ. Each rule the guard
   gains has a blocked example and a near miss that passes in `agent/tests/`.
-- Docs change in the same PR: `agent/README.md` for the guard, this file for the
-  rules below.
+- A skill is a folder under `agent/skills/` named as its `name:` says, with a
+  description that says when to use it; the reviewer's brief is
+  `agent/agents/twr-reviewer.md`. A pattern added to `agent/lanes.json` has an
+  example that lands in the lane and a near miss in `agent/tests/test_lanes.py`.
+- `agent/copies.json` is the manifest of what every repository copies from
+  `agent/` and where: the guard's two files and every file under `agent/skills/`
+  and `agent/agents/`, each to a path under `.claude/`. Whatever copies or checks
+  those files reads it, at the release a repository pins. Adding a skill, or a
+  file to one, means adding its line: `agent/tests/test_copies.py` fails
+  otherwise.
+- Docs change in the same PR: `agent/README.md` for the guard, the skills, the
+  manifest and the lanes, this file for the rules below.
 
 ## Brand assets
 
@@ -118,8 +128,8 @@ this repository:
 
 A change to the preset reaches a repository only through the PR that bumps that
 pin. Renovate doesn't open it: when this repository releases, its fan-out opens one
-PR in each repository that moves the pin with the workflow pins and the guard copy
-(see "Releases" below). This repository's own
+PR in each repository that moves the pin with the workflow pins and the copies in
+`.claude/` (see "Releases" below). This repository's own
 `renovate.json` extends the preset unpinned, from `main`: it is where the preset is
 written, so each change applies here first, before any repository takes it.
 
@@ -284,9 +294,15 @@ uses: those-who-run/.github/.github/workflows/<name>.yml@<sha> # vX.Y.Z
 `scripts/repos.json` moving it onto the release: the pins of this repository's
 workflows (to the tag's commit SHA with the tag in the comment, or to the bare
 tag, whichever form the repository uses; a SHA with no tag comment is left alone),
-the preset's pin in `renovate.json`, and the guard copy in `.claude/`
-(`agent/guard.py` and `agent/settings.json` at the tag), in chassis's template
-files too. The branch is `chore/github-vX.Y.Z` and the title
+the preset's pin in `renovate.json`, and the copies in `.claude/`: every file the
+release's `agent/copies.json` lists, byte for byte from `agent/` at the tag, created
+where the repository doesn't have it, with a `.gitignore` exception where its rules
+would ignore it, and a stale copy (a tracked file at `.claude/skills/twr-*/**` or
+`.claude/agents/twr-*.md` the manifest doesn't list) removed. A release from before
+the manifest copies the guard's two files only, where the repository has them, as
+it always did. chassis's template files take the same; a copy there is a plain
+file, never one with the `.jinja` suffix, so copier copies its bytes. The branch is
+`chore/github-vX.Y.Z` and the title
 `ci: those-who-run/.github vX.Y.Z`. It runs as the release App, so each PR starts
 the repository's CI, a re-run opens no second PR, and an open fan-out PR for an
 earlier release is closed in favour of the new one. Nothing merges them: the
@@ -298,6 +314,8 @@ result, and the job fails if any repository failed. The App needs the Contents, 
 requests and Workflows permissions (read and write) and to be installed on every
 listed repository
 ([`.github/workflows/README.md`](.github/workflows/README.md#the-fan-out)).
+A manifest with a fault (not an object of path to path, a source missing at the tag,
+a destination outside `.claude/`) stops the run before any repository is touched.
 `python3 scripts/fan_out.py --tag vX.Y.Z --dry-run` prints each repository's diff
 and changes nothing; `tests/test_fan_out.py` runs it against a stub `gh` and local
-git repositories.
+git repositories, with manifests of its own.
