@@ -8,7 +8,12 @@ New direct dependencies: none <!-- or each one, with the reason for it -->
 
 ## How it was checked
 
-<!-- The tests that pin each acceptance criterion, and anything checked by hand. -->
+<!-- One row per acceptance criterion, in the issue's order. Proof is the kind of evidence: `unit`, `recording`, `parity`, `e2e`, `live` or `car`. Where names the test or the command, and the recording when there is one. An agent never claims `live` or `car`: a criterion only the maintainer can check says so and stays open. -->
+
+| Criterion | Proof | Where |
+|---|---|---|
+| AC1 <!-- short name --> | unit | <!-- `path/to/the_test.go`, `TestName` --> |
+| AC2 <!-- short name --> | car | Not run here: the maintainer checks it in a session |
 
 - [ ] The command that matches CI (the repository's `AGENTS.md` names it) is green
 - [ ] Docs updated, or none needed because:
