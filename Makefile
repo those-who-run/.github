@@ -8,7 +8,7 @@
 # web/package-lock.json; both are SIL OFL 1.1 (assets/OFL-1.1.txt). The social
 # preview PNG needs ImageMagick (magick).
 
-.PHONY: help brand-assets wordmark clean board-check board protect-check protect envs-check envs new-repo-check
+.PHONY: help brand-assets wordmark clean board-check board protect-check protect envs-check envs new-repo-check labels-check labels
 
 PYTHON    ?= python3
 BUILD     := build
@@ -44,6 +44,8 @@ help:
 	@echo "envs-check     - report each releasing repository's release-please environment (names, never values)"
 	@echo "envs           - set up the release-please environments: make envs CLIENT_ID=<Client ID> PEM=<key file>"
 	@echo "new-repo-check - check a new repository has what every repository needs: make new-repo-check REPO=<name>"
+	@echo "labels-check   - report where each repository's labels differ from scripts/labels.json"
+	@echo "labels         - create or update the labels in scripts/labels.json in every repository, then check them"
 
 $(BRAND_ENV): .github/requirements-brand.txt
 	rm -rf $(BUILD)/brand-venv
@@ -127,3 +129,11 @@ envs:
 new-repo-check:
 	@test -n "$$REPO" || { echo "make new-repo-check needs REPO=<the repository's name>" >&2; exit 2; }
 	@bash scripts/new-repo-check.sh "$$REPO"
+
+labels-check:
+	@bash scripts/labels.sh --check
+
+# The apply reads everything back and checks it again itself; it never deletes or
+# renames a label.
+labels:
+	@bash scripts/labels.sh

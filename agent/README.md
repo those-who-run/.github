@@ -30,9 +30,10 @@ policy.
   printing the `gh` token or changing its login (`token`, `login`, `logout` and
   `refresh` under `gh auth`), writes to a cluster or a registry, reading a secret
   from Bash, and the maintainer's own jobs in `those-who-run/.github`: the make
-  targets `board`, `board-check`, `protect`, `protect-check`, `envs`, `envs-check`
-  and `new-repo-check`, and the scripts behind them (`protect-repo.sh`,
-  `board-sync.sh`, `release-envs.sh`, `new-repo-check.sh`), whether run by path,
+  targets `board`, `board-check`, `protect`, `protect-check`, `envs`, `envs-check`,
+  `new-repo-check`, `labels` and `labels-check`, and the scripts behind them
+  (`protect-repo.sh`, `board-sync.sh`, `release-envs.sh`, `new-repo-check.sh`,
+  `labels.sh`), whether run by path,
   through a shell or with `source`. Reading or linting those scripts passes. Two dry
   runs pass, and only in exactly these forms: `bash -n <script>` (or `sh -n`, `dash
   -n`, `zsh -n`) and `make -n <target>`. A shell given one of the scripts anywhere in

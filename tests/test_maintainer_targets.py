@@ -1,6 +1,6 @@
 """The maintainer's make targets and the scripts behind them: scripts/board-sync.sh,
-scripts/release-envs.sh and scripts/new-repo-check.sh (protect-repo.sh has its own
-tests in test_protect_repo.py). Each runs through make, as the maintainer runs it,
+scripts/release-envs.sh and scripts/new-repo-check.sh (protect-repo.sh and labels.sh
+have their own tests, in test_protect_repo.py and test_labels.py). Each runs through make, as the maintainer runs it,
 against a stub `gh` that keeps a pretend GitHub in a JSON file, so nothing reaches
 GitHub.
 
@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LIST = ROOT / "scripts" / "repos.json"
+LABELS = ROOT / "scripts" / "labels.json"
 ORG = "those-who-run"
 
 STUB = r'''
@@ -164,9 +165,11 @@ if m:
     done({"path": m[1]} if m[1] in files else None, 0 if m[1] in files else 404)
 m = re.fullmatch(r"labels/(.+)", rest)
 if m:
+    # A label is a name alone, or a whole label with its colour and description.
     name = m[1].replace("%20", " ")
-    labels = state["labels"].get(repo, [])
-    done({"name": name} if name in labels else None, 0 if name in labels else 404)
+    labels = [l if isinstance(l, dict) else {"name": l} for l in state["labels"].get(repo, [])]
+    found = [l for l in labels if l["name"] == name]
+    done(found[0] if found else None, 0 if found else 404)
 if rest == "actions/secrets":
     names = state["envs"].get(repo, {}).get("repo_secrets", [])
     done({"total_count": len(names), "secrets": [{"name": n} for n in names]})
@@ -693,6 +696,9 @@ class NewRepoCheck(Targets):
                                                   "triage": True, "pull": True}}
         self.state["envs"][repo] = ready_env()
         self.state["labels"][f"{ORG}/paddock"] = [f"component: {name}", "needs triage"]
+        # The labels every repository needs, as `make labels` makes them.
+        self.state["labels"][repo] = [l for l in json.loads(LABELS.read_text())["labels"]
+                                      if repo in l.get("only", [repo])]
 
     def test_a_repository_with_everything_passes(self):
         self.complete("radio")
@@ -701,10 +707,27 @@ class NewRepoCheck(Targets):
         self.assertEqual(run.writes, [])
         for line in ("main exists", "LICENSE on main", "team pit-crew has push access",
                      "in scripts/repos.json", "release-please environment set up",
-                     f"{ORG}/paddock has the label 'component: radio'", ".github/CODEOWNERS on main"):
+                     f"{ORG}/paddock has the label 'component: radio'",
+                     "has the label 'hold' with its colour and description",
+                     "has the label 're-review' with its colour and description",
+                     ".github/CODEOWNERS on main"):
             self.assertIn(f"pass: {ORG}/radio: {line}", run.out)
         self.assertNotIn("fail:", run.out)
+        self.assertNotIn("agent-ready", run.out)
         self.assertIn(f"every check passed for {ORG}/radio", run.out)
+
+    def test_paddock_is_asked_for_the_labels_only_it_takes(self):
+        self.complete("paddock")
+        run = self.make("new-repo-check", "REPO=paddock")
+        self.assertIn(f"pass: {ORG}/paddock: has the label 'agent-ready' with its colour and description", run.out)
+        self.state["labels"][f"{ORG}/paddock"] = [
+            l if l["name"] != "hold" else dict(l, color="ffffff") for l in self.state["labels"][f"{ORG}/paddock"]
+            if l["name"] != "agent-ready"]
+        run = self.make("new-repo-check", "REPO=paddock")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn(f"fail: {ORG}/paddock: has the label 'hold' with another colour or description: run make labels", run.out)
+        self.assertIn(f"fail: {ORG}/paddock: has no label 'agent-ready': run make labels", run.out)
+        self.assertIn(f"pass: {ORG}/paddock: has the label 're-review' with its colour and description", run.out)
 
     def test_a_repository_missing_things_fails_each_one(self):
         name = "brand-new"
@@ -715,6 +738,7 @@ class NewRepoCheck(Targets):
         self.state["teams"]["pit-crew"][repo]["push"] = False
         self.state["envs"][repo] = ready_env(repo_secrets=["RELEASE_APP_PRIVATE_KEY"])
         self.state["labels"][f"{ORG}/paddock"] = []
+        self.state["labels"][repo] = []
         run = self.make("new-repo-check", f"REPO={ORG}/{name}")
         self.assertEqual(run.code, 1, run.out + run.err)
         self.assertEqual(run.writes, [])
@@ -724,9 +748,11 @@ class NewRepoCheck(Targets):
                      f"fail: {repo}: release-please environment not set up",
                      "    RELEASE_APP_PRIVATE_KEY is a repository secret",
                      f"fail: {repo}: {ORG}/paddock has no label 'component: {name}'",
+                     f"fail: {repo}: has no label 'hold': run make labels",
+                     f"fail: {repo}: has no label 're-review': run make labels",
                      f"fail: {repo}: no .github/CODEOWNERS on main"):
             self.assertIn(line, run.out)
-        self.assertIn(f"5 check(s) failed for {repo}", run.out)
+        self.assertIn(f"7 check(s) failed for {repo}", run.out)
 
     def test_a_repository_without_main(self):
         run = self.make("new-repo-check", "REPO=nothing-yet")
@@ -743,7 +769,8 @@ class NewRepoCheck(Targets):
 
 
 class Makefile(unittest.TestCase):
-    TARGETS = ["board-check", "board", "protect-check", "protect", "envs-check", "envs", "new-repo-check"]
+    TARGETS = ["board-check", "board", "protect-check", "protect", "envs-check", "envs", "new-repo-check",
+               "labels-check", "labels"]
 
     def test_help_lists_the_targets_under_the_maintainer_heading(self):
         out = subprocess.run(["make", "--no-print-directory", "-C", str(ROOT), "help"],
@@ -756,7 +783,7 @@ class Makefile(unittest.TestCase):
             self.assertNotIn(f"\n{target} ", heading)
 
     def test_the_scripts_say_who_runs_them(self):
-        for name in ("board-sync.sh", "release-envs.sh", "new-repo-check.sh"):
+        for name in ("board-sync.sh", "release-envs.sh", "new-repo-check.sh", "labels.sh"):
             header = (ROOT / "scripts" / name).read_text().split("set -euo pipefail")[0]
             with self.subTest(script=name):
                 self.assertIn("Run by the maintainer", header)
