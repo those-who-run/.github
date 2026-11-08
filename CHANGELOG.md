@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/those-who-run/.github/compare/v0.2.17...v0.2.18) (2026-11-08)
+
+
+### Bug Fixes
+
+* **scripts:** new-repo-check matches a label by its exact name ([#75](https://github.com/those-who-run/.github/issues/75)) ([cb5e28b](https://github.com/those-who-run/.github/commit/cb5e28b18ee973e7dd9be4efdf3c4fe08f3f4e69))
+
 ## [0.2.17](https://github.com/those-who-run/.github/compare/v0.2.16...v0.2.17) (2026-11-08)
 
 
