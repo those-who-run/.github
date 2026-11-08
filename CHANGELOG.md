@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.17](https://github.com/those-who-run/.github/compare/v0.2.16...v0.2.17) (2026-11-08)
+
+
+### Features
+
+* **repos:** list pit-crew, the merge ladder's runner ([#72](https://github.com/those-who-run/.github/issues/72)) ([bb13f1d](https://github.com/those-who-run/.github/commit/bb13f1da0813dbbf6b5b0e559ca5a00936fb405a))
+* **scripts:** make labels, the labels every repository needs ([#74](https://github.com/those-who-run/.github/issues/74)) ([5f98cf6](https://github.com/those-who-run/.github/commit/5f98cf6a45ca6e6597a83bdf67a96cd24c72b1bb))
+
 ## [0.2.16](https://github.com/those-who-run/.github/compare/v0.2.15...v0.2.16) (2026-11-07)
 
 
