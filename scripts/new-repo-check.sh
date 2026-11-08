@@ -15,8 +15,9 @@
 #   - the repository is in scripts/repos.json (then run `make protect`);
 #   - its release-please environment is set up (scripts/release-envs.sh --check);
 #   - paddock, where every issue lives, has the label `component: <repo>`;
-#   - it has each label in scripts/labels.json that applies to it, with its colour
-#     and description (`make labels` makes them);
+#   - it has each label in scripts/labels.json that applies to it, under its exact
+#     name (`Hold` is not `hold`), with its colour and description (`make labels`
+#     makes them);
 #   - .github/CODEOWNERS exists on `main`.
 #
 # It exits 1 if any check fails, 2 on bad arguments.
@@ -114,6 +115,10 @@ while IFS= read -r want <&3; do
   label=$(jq -r .name <<<"$want")
   if ! have=$(gh api "repos/$repo/labels/${label// /%20}" 2>/dev/null); then
     failed "has no label '$label': run make labels"
+  # GitHub finds a label by name in any case, so `Hold` comes back for `hold`. Like
+  # `make labels-check`, only the exact name passes: `make labels` never renames one.
+  elif got=$(jq -r .name <<<"$have") && [ "$got" != "$label" ]; then
+    failed "has the label '$label' named '$got': rename it by hand"
   elif jq -e --argjson w "$want" '(.color | ascii_downcase) == $w.color and (.description // "") == $w.description' \
          <<<"$have" >/dev/null; then
     pass "has the label '$label' with its colour and description"
