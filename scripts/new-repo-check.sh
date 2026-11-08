@@ -7,7 +7,7 @@
 # secret names) needs an admin login, and the agents leave repository settings to the
 # maintainer.
 #
-#   scripts/new-repo-check.sh <repo> [--owner ORG] [--list FILE]
+#   scripts/new-repo-check.sh <repo> [--owner ORG] [--list FILE] [--labels FILE]
 #
 # The checks:
 #   - `main` exists and has a LICENSE;
@@ -15,6 +15,8 @@
 #   - the repository is in scripts/repos.json (then run `make protect`);
 #   - its release-please environment is set up (scripts/release-envs.sh --check);
 #   - paddock, where every issue lives, has the label `component: <repo>`;
+#   - it has each label in scripts/labels.json that applies to it, with its colour
+#     and description (`make labels` makes them);
 #   - .github/CODEOWNERS exists on `main`.
 #
 # It exits 1 if any check fails, 2 on bad arguments.
@@ -23,17 +25,19 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: new-repo-check.sh <repo> [--owner ORG] [--list FILE]" >&2
+  echo "usage: new-repo-check.sh <repo> [--owner ORG] [--list FILE] [--labels FILE]" >&2
   exit 2
 }
 here="$(cd "$(dirname "$0")" && pwd)"
 owner=those-who-run
 list="$here/repos.json"
+LABELS="$here/labels.json"
 name=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --owner) [ $# -ge 2 ] || usage; owner=$2; shift 2 ;;
     --list) [ $# -ge 2 ] || usage; list=$2; shift 2 ;;
+    --labels) [ $# -ge 2 ] || usage; LABELS=$2; shift 2 ;;
     -h|--help) usage ;;
     -*) echo "unknown option: $1" >&2; usage ;;
     *) [ -z "$name" ] || usage; name=$1; shift ;;
@@ -102,6 +106,22 @@ if exists "repos/$ISSUES_REPO/labels/${LABEL// /%20}"; then
 else
   failed "$ISSUES_REPO has no label '$LABEL'"
 fi
+
+# The labels every repository needs (scripts/labels.json; `make labels` makes them),
+# each with its colour and description: the ones with `only` apply to a new repository
+# only when it is named there.
+while IFS= read -r want <&3; do
+  label=$(jq -r .name <<<"$want")
+  if ! have=$(gh api "repos/$repo/labels/${label// /%20}" 2>/dev/null); then
+    failed "has no label '$label': run make labels"
+  elif jq -e --argjson w "$want" '(.color | ascii_downcase) == $w.color and (.description // "") == $w.description' \
+         <<<"$have" >/dev/null; then
+    pass "has the label '$label' with its colour and description"
+  else
+    failed "has the label '$label' with another colour or description: run make labels"
+  fi
+done 3< <(jq -c --arg r "$repo" '.labels[] | select((.only // [$r]) | map(ascii_downcase) | index($r | ascii_downcase))
+  | {name, color, description}' "$LABELS")
 
 on_main .github/CODEOWNERS .github/CODEOWNERS
 
