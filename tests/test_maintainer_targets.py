@@ -166,9 +166,10 @@ if m:
 m = re.fullmatch(r"labels/(.+)", rest)
 if m:
     # A label is a name alone, or a whole label with its colour and description.
+    # GitHub finds it by name in any case, and answers with the name it has.
     name = m[1].replace("%20", " ")
     labels = [l if isinstance(l, dict) else {"name": l} for l in state["labels"].get(repo, [])]
-    found = [l for l in labels if l["name"] == name]
+    found = [l for l in labels if l["name"].lower() == name.lower()]
     done(found[0] if found else None, 0 if found else 404)
 if rest == "actions/secrets":
     names = state["envs"].get(repo, {}).get("repo_secrets", [])
@@ -728,6 +729,19 @@ class NewRepoCheck(Targets):
         self.assertIn(f"fail: {ORG}/paddock: has the label 'hold' with another colour or description: run make labels", run.out)
         self.assertIn(f"fail: {ORG}/paddock: has no label 'agent-ready': run make labels", run.out)
         self.assertIn(f"pass: {ORG}/paddock: has the label 're-review' with its colour and description", run.out)
+
+    def test_a_label_in_another_case_fails_as_labels_check_reports_it(self):
+        self.complete("radio")
+        repo = f"{ORG}/radio"
+        self.state["labels"][repo] = [dict(l, name="Hold") if l["name"] == "hold" else l
+                                      for l in self.state["labels"][repo]]
+        run = self.make("new-repo-check", "REPO=radio")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.writes, [])
+        self.assertIn(f"fail: {repo}: has the label 'hold' named 'Hold': rename it by hand", run.out)
+        self.assertNotIn("has the label 'hold' with its colour and description", run.out)
+        self.assertIn(f"pass: {repo}: has the label 're-review' with its colour and description", run.out)
+        self.assertIn(f"1 check(s) failed for {repo}", run.out)
 
     def test_a_repository_missing_things_fails_each_one(self):
         name = "brand-new"
