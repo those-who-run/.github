@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.19](https://github.com/those-who-run/.github/compare/v0.2.18...v0.2.19) (2026-11-10)
+
+
+### Bug Fixes
+
+* **release-please:** let the release token tag behind a fan-out ([#77](https://github.com/those-who-run/.github/issues/77)) ([719762d](https://github.com/those-who-run/.github/commit/719762d3982226ebc78b40da46d784d90041d50b))
+
 ## [0.2.18](https://github.com/those-who-run/.github/compare/v0.2.17...v0.2.18) (2026-11-08)
 
 
