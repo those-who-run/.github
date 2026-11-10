@@ -312,7 +312,9 @@ def app_token_problems(workflow: str) -> list[str]:
     if re.search(r"^          (owner|repositories):", rp, re.M):
         problems.append("the token is scoped beyond the calling repository")
     asked = set(re.findall(r"^          permission-([a-z-]+): (\w+)", rp, re.M))
-    if asked != {("contents", "write"), ("pull-requests", "write"), ("issues", "write")}:
+    # Workflows for the tag: a fan-out PR that lands right after the release PR leaves
+    # the release's commit with other workflow files than main's.
+    if asked != {("contents", "write"), ("pull-requests", "write"), ("issues", "write"), ("workflows", "write")}:
         problems.append(f"the token asks for {sorted(asked)}")
     # Used once, by release-please; never in a script, an output, the environment or a file.
     if workflow.count(APP_TOKEN) != 1:

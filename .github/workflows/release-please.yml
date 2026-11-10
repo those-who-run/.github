@@ -112,6 +112,10 @@ jobs:
           permission-contents: write # the release PR's branch, the v* tag and the GitHub release
           permission-pull-requests: write # the release PR
           permission-issues: write # its autorelease labels
+          # A fan-out PR can land between the release PR's merge and this job, and
+          # the tag's commit then has other workflow files than main's: without
+          # this, creating the GitHub release is refused.
+          permission-workflows: write
       - id: rp
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:

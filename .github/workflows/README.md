@@ -466,8 +466,11 @@ release-please. It is:
 
 - scoped to the calling repository: `owner` and `repositories` are left unset, which
   `actions/create-github-app-token` documents as the current repository only;
-- narrowed to what release-please uses: contents, pull requests and issues (its
-  labels), each `write`;
+- narrowed to what release-please uses: contents, pull requests, issues (its labels)
+  and workflows, each `write`. Workflows is there for the tag: when a fan-out PR lands
+  between the release PR's merge and this job, the release's commit has other files in
+  `.github/workflows/` than `main`, and GitHub then refuses to create the release with
+  "Resource not accessible by integration";
 - a step output, masked in the log, never a job output, an environment variable or a
   file, and revoked when the job ends.
 
