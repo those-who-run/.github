@@ -117,6 +117,21 @@ class Agents(unittest.TestCase):
                 self.assertIn(f"`{word}`", text)
         self.assertIn("<!-- twr-review sha=<head> kind=<A-D> lane=<lane> -->", text)
 
+    def test_the_reviewer_takes_web_flow_as_a_committer_only(self):
+        # The poller's committer list has web-flow, so a head it sends for review
+        # must not be skipped for it (paddock#376). It is in no kind's author list.
+        text = (AGENTS / "twr-reviewer.md").read_text(encoding="utf-8")
+        kinds, _, rule = text.partition("## 1. Kind")[2].partition("## 2. Snapshot")[0].partition("\n\n")[2].partition("A commit's committer")
+        self.assertNotIn("web-flow", kinds)
+        self.assertIn("may also be `web-flow`", rule)
+        self.assertIn("neither on it nor `web-flow`", rule)
+
+    def test_a_skipped_or_blocked_verdict_carries_its_reason(self):
+        text = (AGENTS / "twr-reviewer.md").read_text(encoding="utf-8")
+        fields = text.partition("- **`verdict.json`:**")[2].partition("## Reviewing a new head")[0]
+        self.assertIn('"verdict", "reason",', fields)
+        self.assertIn("required when the verdict is `skipped` or `blocked`", fields)
+
 
 class Public(unittest.TestCase):
     def test_no_private_values(self):
