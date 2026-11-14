@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.20](https://github.com/those-who-run/.github/compare/v0.2.19...v0.2.20) (2026-11-14)
+
+
+### Bug Fixes
+
+* **agent:** the reviewer takes web-flow as a committer, and records why it skipped ([#79](https://github.com/those-who-run/.github/issues/79)) ([176dc92](https://github.com/those-who-run/.github/commit/176dc928057c9e4727b0772212c8d19b58a62957))
+
 ## [0.2.19](https://github.com/those-who-run/.github/compare/v0.2.18...v0.2.19) (2026-11-10)
 
 
